@@ -1,0 +1,42 @@
+@import "tailwindcss";
+
+@theme {
+  /* Polices : installées avec l'application (aucune dépendance à Google Fonts) */
+  --font-sans: "Manrope Variable", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-display: "Space Grotesk Variable", "Manrope Variable", system-ui, sans-serif;
+
+  /* Identité DOBI */
+  --color-forest: #102f2b;
+  --color-deep: #0b332b;
+  --color-lime: #d5f06a;
+  --color-ivory: #f5f1e8;
+  --color-terracotta: #d77a52;
+  --color-slate: #7c91a0;
+
+  /* Alias utilisés par les écrans existants */
+  --color-ink: #102f2b;
+  --color-paper: #f5f1e8;
+  --color-leaf: #102f2b;
+  --color-leaf-dark: #0b332b;
+  --color-sun: #d5f06a;
+
+  /* Couleurs sémantiques */
+  --color-success: #2f7d4f;
+  --color-alert: #b3392b;
+  --color-warning: #b9791a;
+  --color-info: #2f6f8f;
+}
+
+body { @apply bg-ivory text-forest font-sans antialiased; }
+h1, h2, h3 { font-family: var(--font-display); letter-spacing: -0.01em; }
+
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+@layer components {
+  .btn { @apply inline-flex items-center justify-center gap-2 rounded-lg bg-lime px-4 py-2 text-sm font-bold text-forest transition hover:brightness-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-forest disabled:opacity-50; }
+  .btn-ghost { @apply inline-flex items-center justify-center gap-2 rounded-lg border border-forest/20 bg-white px-4 py-2 text-sm font-semibold text-forest transition hover:bg-forest/5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-forest; }
+  .input { @apply w-full rounded-lg border border-forest/25 bg-white px-3 py-2 text-sm focus-visible:outline-2 focus-visible:outline-forest; }
+  .label { @apply mb-1 block text-sm font-semibold; }
+  .panel { @apply rounded-xl border border-forest/10 bg-white p-5 shadow-[0_1px_2px_rgba(16,47,43,0.05)]; }
+  .error { @apply rounded-lg border border-alert/40 bg-alert/10 px-3 py-2 text-sm text-alert; }
+}

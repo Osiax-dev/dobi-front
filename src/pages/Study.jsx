@@ -2,17 +2,18 @@ import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { QRCodeSVG } from 'qrcode.react';
-import { ArrowDown, ArrowUp, Copy, FolderPlus, GripVertical, Pencil, Plus, Trash2, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, Copy, FolderPlus, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { api, errText } from '../api';
 import Results from './Results';
-import { Question as PreviewQuestion, visibleQuestions } from './Public';
+import { Question as PreviewQuestion, buildVisibleSteps, visibleQuestions } from './Public';
 import { STATUS } from '../ui';
 
+const OTHER_PREFIX = '__dobi_other__:';
 const TYPES = {
-  short_text: 'Réponse courte', long_text: 'Réponse longue', single_choice: 'Choix unique', multiple_choice: 'Choix multiple',
-  yes_no: 'Oui / Non', number: 'Nombre', date: 'Date', scale: 'Note de 1 à 5', location: 'Lieu',
+  short_text: 'Réponse courte', long_text: 'Réponse longue', integer: 'Nombre entier', decimal: 'Nombre décimal', single_choice: 'Choix unique', dropdown: 'Liste déroulante', multiple_choice: 'Choix multiple',
+  yes_no: 'Oui / Non', number: 'Nombre', date: 'Date', time: 'Heure', datetime: 'Date et heure', scale: 'Échelle de notation', location: 'Lieu / adresse', geolocation: 'Position GPS', note: 'Texte informatif',
 };
-const OPERATORS = { equals: 'est égal à', not_equals: 'est différent de', contains: 'contient', gt: 'est supérieur à', lt: 'est inférieur à' };
+const OPERATORS = { equals: 'est égal à', not_equals: 'est différent de', contains: 'contient', gt: 'est supérieur à', gte: 'est supérieur ou égal à', lt: 'est inférieur à', lte: 'est inférieur ou égal à' };
 const ACTION_LABELS = { resume: 'Reprendre', suspend: 'Suspendre', close: 'Clôturer', archive: 'Archiver', restore: 'Restaurer' };
 const CONFIRM = {
   close: 'Clôturer cette étude ? Elle n’acceptera plus de réponses.',
@@ -86,7 +87,7 @@ export default function Study() {
       </div>
 
       {tab === 'questions' && <Builder study={s} questions={questions} sections={tree.data?.sections || []} onChange={refresh} readOnly={archived} />}
-      {tab === 'preview' && <Preview questions={questions} />}
+      {tab === 'preview' && <Preview questions={questions} sections={tree.data?.sections || []} />}
       {tab === 'results' && <Results study={s} orgName={s.organization_name} />}
       {tab === 'history' && <History study={s} />}
     </div>
@@ -101,11 +102,12 @@ function RuleValue({ source, value, onChange }) {
       </select>
     );
   }
-  if (source && ['single_choice', 'multiple_choice'].includes(source.type)) {
+  if (source && ['single_choice', 'dropdown', 'multiple_choice'].includes(source.type)) {
     return (
       <select className="input" aria-label="Valeur" value={value} onChange={(e) => onChange(e.target.value)}>
         <option value="">Choisir…</option>
         {source.options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        {source.settings?.allow_other && <option value="__other__">Autre</option>}
       </select>
     );
   }
@@ -113,192 +115,167 @@ function RuleValue({ source, value, onChange }) {
 }
 
 function Builder({ study, questions, sections, onChange, readOnly }) {
-  const blank = { type: 'short_text', label: '', required: false, section_id: '', options: [{ label: '', value: '' }, { label: '', value: '' }], source: '', operator: 'equals', value: '', min: '', max: '' };
+  const blank = { type: 'short_text', label: '', description: '', required: false, allow_other: false, section_id: '', options: [{ label: '', value: '' }, { label: '', value: '' }], source: '', operator: 'equals', value: '', min: '', max: '', min_length: '', max_length: '', format: '' };
   const [f, setF] = useState(blank);
   const [editing, setEditing] = useState(null);
-  const [drag, setDrag] = useState(null);
-  const [newSection, setNewSection] = useState('');
+  const [activeSection, setActiveSection] = useState(sections[0]?.id ?? null);
+  const [sectionForm, setSectionForm] = useState({ title: '', description: '' });
+  const [editingSection, setEditingSection] = useState(null);
   const [error, setError] = useState('');
-  const choice = ['single_choice', 'multiple_choice'].includes(f.type);
-  const editIndex = editing ? questions.findIndex((q) => q.id === editing) : questions.length;
-  const sources = questions.slice(0, Math.max(editIndex, 0));
+  const [showSectionForm, setShowSectionForm] = useState(false);
+  const choice = ['single_choice', 'dropdown', 'multiple_choice'].includes(f.type);
+  const ordered = [...questions].sort((a, b) => {
+    const sa = sections.find((x) => x.id === a.section_id)?.position ?? -1;
+    const sb = sections.find((x) => x.id === b.section_id)?.position ?? -1;
+    return sa - sb || a.position - b.position || a.id - b.id;
+  });
+  const currentQuestionIndex = editing ? ordered.findIndex((q) => q.id === editing) : ordered.length;
+  const sources = ordered.slice(0, Math.max(0, currentQuestionIndex)).filter((q) => !['note', 'geolocation'].includes(q.type));
   const source = sources.find((q) => String(q.id) === String(f.source));
-
   const ok = () => { setError(''); onChange(); };
   const fail = (e) => setError(errText(e));
-  const reset = () => { setF(blank); setEditing(null); };
+  const reset = () => { setF({ ...blank, section_id: activeSection ?? '' }); setEditing(null); };
+  const simple = useMutation({ mutationFn: ({ path, method, body }) => api(path, { method, body }), onSuccess: ok, onError: fail });
 
+  const saveSection = useMutation({
+    mutationFn: () => editingSection
+      ? api(`/sections/${editingSection}`, { method: 'PUT', body: sectionForm })
+      : api(`/studies/${study.id}/sections`, { method: 'POST', body: sectionForm }),
+    onSuccess: (section) => { setSectionForm({ title: '', description: '' }); setEditingSection(null); setShowSectionForm(false); setActiveSection(section.id); ok(); },
+    onError: fail,
+  });
   const save = useMutation({
     mutationFn: () => {
-      const settings = f.type === 'scale' ? { min: 1, max: 5 } : f.type === 'number' ? { ...(f.min !== '' && { min: Number(f.min) }), ...(f.max !== '' && { max: Number(f.max) }) } : null;
+      const settings = {};
+      if (['integer', 'decimal', 'number', 'scale'].includes(f.type)) {
+        if (f.min !== '') settings.min = Number(f.min);
+        if (f.max !== '') settings.max = Number(f.max);
+      }
+      if (f.type === 'scale') { settings.min ??= 1; settings.max ??= 5; }
+      if (f.min_length !== '') settings.min_length = Number(f.min_length);
+      if (f.max_length !== '') settings.max_length = Number(f.max_length);
+      if (f.format) settings.format = f.format;
+      if (['single_choice', 'multiple_choice'].includes(f.type) && f.allow_other) settings.allow_other = true;
       const body = {
-        label: f.label, required: f.required, section_id: f.section_id ? Number(f.section_id) : null,
-        ...(editing ? {} : { type: f.type }),
-        ...(choice && { options: f.options.filter((o) => o.label.trim()).map((o) => ({ label: o.label.trim(), ...(o.value && { value: o.value }) })) }),
-        ...(settings && { settings }),
-        rules: f.source ? [{ source_question_id: Number(f.source), operator: f.operator, value: String(f.value) }] : [],
+        label: f.label.trim(), description: f.description.trim() || null, required: f.type === 'note' ? false : f.required,
+        section_id: f.section_id ? Number(f.section_id) : null,
+        ...(!editing ? { type: f.type } : {}),
+        ...(choice ? { options: f.options.filter((o) => o.label.trim()).map((o) => ({ label: o.label.trim(), ...(o.value ? { value: o.value } : {}) })) } : {}),
+        settings: Object.keys(settings).length ? settings : null,
+        rules: f.source ? [{ source_question_id: Number(f.source), operator: f.operator, value: String(f.value ?? '') }] : [],
       };
       return editing ? api(`/questions/${editing}`, { method: 'PUT', body }) : api(`/studies/${study.id}/questions`, { method: 'POST', body });
     },
-    onSuccess: () => { reset(); ok(); },
-    onError: fail,
+    onSuccess: () => { reset(); ok(); }, onError: fail,
   });
-  const simple = useMutation({ mutationFn: ({ path, method, body }) => api(path, { method, body }), onSuccess: ok, onError: fail });
 
-  const move = (from, to) => {
-    if (to < 0 || to >= questions.length || questions[from].section_id !== questions[to].section_id) return;
-    const ids = questions.map((q) => q.id);
-    const [m] = ids.splice(from, 1);
-    ids.splice(to, 0, m);
-    simple.mutate({ path: `/studies/${study.id}/reorder`, method: 'POST', body: { questions: ids } });
-  };
-
-  const edit = (q) => {
+  const editQuestion = (q) => {
     setEditing(q.id);
-    setF({
-      type: q.type, label: q.label, required: q.required, section_id: q.section_id ?? '',
-      options: q.options.length ? q.options.map((o) => ({ ...o })) : [{ label: '', value: '' }, { label: '', value: '' }],
-      source: q.rules[0]?.source_question_id ?? '', operator: q.rules[0]?.operator ?? 'equals', value: q.rules[0]?.value ?? '',
-      min: q.settings?.min ?? '', max: q.settings?.max ?? '',
-    });
+    setActiveSection(q.section_id ?? null);
+    setF({ ...blank, type: q.type, label: q.label, description: q.description || '', required: q.required, section_id: q.section_id ?? '',
+      options: q.options?.length ? q.options.map((o) => ({ ...o })) : [{ label: '', value: '' }, { label: '', value: '' }],
+      source: q.rules?.[0]?.source_question_id ?? '', operator: q.rules?.[0]?.operator ?? 'equals', value: q.rules?.[0]?.value ?? '',
+      min: q.settings?.min ?? '', max: q.settings?.max ?? '', min_length: q.settings?.min_length ?? '', max_length: q.settings?.max_length ?? '', format: q.settings?.format ?? '', allow_other: !!q.settings?.allow_other });
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
-
-  const sectionName = (id) => sections.find((s) => s.id === id)?.title;
-  const setOpt = (i, patch) => setF({ ...f, options: f.options.map((o, j) => (j === i ? { ...o, ...patch } : o)) });
+  const editStep = (section) => { setEditingSection(section.id); setSectionForm({ title: section.title, description: section.description || '' }); setShowSectionForm(true); };
+  const saveLayout = (nextSections, nextQuestions) => {
+    const steps = nextSections.map((section) => ({ id: section.id, questions: nextQuestions.filter((q) => q.section_id === section.id).map((q) => q.id) }));
+    const loose = nextQuestions.filter((q) => !q.section_id).map((q) => q.id);
+    if (loose.length) steps.unshift({ id: null, questions: loose });
+    simple.mutate({ path: `/studies/${study.id}/layout`, method: 'PUT', body: { steps } });
+  };
+  const moveQuestion = (question, targetSectionId) => {
+    const nextQuestions = ordered.map((q) => q.id === question.id ? { ...q, section_id: targetSectionId } : q);
+    saveLayout(sections, nextQuestions);
+  };
+  const moveSection = (section, direction) => {
+    const sorted = [...sections].sort((a, b) => a.position - b.position);
+    const index = sorted.findIndex((s) => s.id === section.id), target = index + direction;
+    if (target < 0 || target >= sorted.length) return;
+    [sorted[index], sorted[target]] = [sorted[target], sorted[index]];
+    simple.mutate({ path: `/studies/${study.id}/reorder`, method: 'POST', body: { sections: sorted.map((s) => s.id) } });
+  };
   const iconBtn = 'rounded-lg p-2 hover:bg-forest/10 disabled:opacity-30';
+  const sectionQuestions = (id) => ordered.filter((q) => q.section_id === id);
 
-  return (
-    <div className="grid gap-6 md:grid-cols-[1fr_340px]">
-      <section>
-        {error && <p className="error mb-3">{error}</p>}
-        {!readOnly && (
-          <form className="mb-4 flex gap-2" onSubmit={(e) => { e.preventDefault(); if (newSection.trim()) { simple.mutate({ path: `/studies/${study.id}/sections`, method: 'POST', body: { title: newSection.trim() } }); setNewSection(''); } }}>
-            <input className="input" aria-label="Nouvelle section" placeholder="Nouvelle section (ex. Vie sur le campus)" value={newSection} onChange={(e) => setNewSection(e.target.value)} />
-            <button className="btn-ghost shrink-0"><FolderPlus size={16} /> Ajouter</button>
-          </form>
-        )}
-        {questions.length === 0 && <p className="panel">Aucune question. Ajoutez la première avec le formulaire.</p>}
-        <ol className="space-y-2">
-          {questions.map((q, i) => {
-            const src = q.rules[0] && questions.find((x) => x.id === q.rules[0].source_question_id);
-            const newGroup = i === 0 ? q.section_id !== null : q.section_id !== questions[i - 1].section_id;
-            return (
-              <li key={q.id} onDragOver={(e) => drag !== null && questions[drag].section_id === q.section_id && e.preventDefault()}
-                onDrop={() => { if (drag !== null && drag !== i && questions[drag].section_id === q.section_id) move(drag, i); setDrag(null); }}>
-                {newGroup && q.section_id !== null && (
-                  <div className="mb-2 mt-4 flex items-center justify-between">
-                    <h3 className="text-lg font-bold">{sectionName(q.section_id)}</h3>
-                    {!readOnly && (
-                      <span className="flex gap-1">
-                        <button aria-label="Renommer la section" title="Renommer" className={iconBtn} onClick={() => { const t = window.prompt('Nom de la section', sectionName(q.section_id)); if (t?.trim()) simple.mutate({ path: `/sections/${q.section_id}`, method: 'PUT', body: { title: t.trim() } }); }}><Pencil size={15} /></button>
-                        <button aria-label="Supprimer la section" title="Supprimer (les questions restent)" className={iconBtn} onClick={() => window.confirm('Supprimer cette section ? Ses questions sont conservées.') && simple.mutate({ path: `/sections/${q.section_id}`, method: 'DELETE' })}><Trash2 size={15} /></button>
-                      </span>
-                    )}
-                  </div>
-                )}
-                <div className={`panel ${editing === q.id ? 'border-forest' : ''}`} draggable={!readOnly} onDragStart={() => setDrag(i)} onDragEnd={() => setDrag(null)}>
-                  <div className="flex items-start gap-2">
-                    {!readOnly && <GripVertical size={18} className="mt-0.5 shrink-0 cursor-grab text-forest/40" aria-hidden="true" />}
-                    <div className="min-w-0 flex-1">
-                      <p className="font-semibold">{i + 1}. {q.label}{q.required && ' *'}</p>
-                      <p className="text-sm">{TYPES[q.type]}{q.options.length > 0 && ` : ${q.options.map((o) => o.label).join(', ')}`}</p>
-                      {src && <p className="text-sm text-forest/70">Affichée si « {src.label} » {OPERATORS[q.rules[0].operator]} {q.rules[0].value}</p>}
-                    </div>
-                    {!readOnly && (
-                      <span className="flex shrink-0 flex-wrap justify-end">
-                        <button aria-label="Monter" title="Monter" className={iconBtn} disabled={i === 0 || questions[i - 1].section_id !== q.section_id} onClick={() => move(i, i - 1)}><ArrowUp size={16} /></button>
-                        <button aria-label="Descendre" title="Descendre" className={iconBtn} disabled={i === questions.length - 1 || questions[i + 1].section_id !== q.section_id} onClick={() => move(i, i + 1)}><ArrowDown size={16} /></button>
-                        <button aria-label="Modifier" title="Modifier" className={iconBtn} onClick={() => edit(q)}><Pencil size={16} /></button>
-                        <button aria-label="Dupliquer" title="Dupliquer" className={iconBtn} onClick={() => simple.mutate({ path: `/questions/${q.id}/duplicate`, method: 'POST' })}><Copy size={16} /></button>
-                        <button aria-label="Supprimer" title="Supprimer" className={iconBtn} onClick={() => window.confirm('Supprimer cette question ?') && simple.mutate({ path: `/questions/${q.id}`, method: 'DELETE' })}><Trash2 size={16} /></button>
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </li>
-            );
-          })}
-        </ol>
-        <p className="mt-3 text-sm">Chaque action est enregistrée aussitôt. Les modifications ne sont visibles du public qu’après « Publier ».</p>
-      </section>
-
-      {!readOnly && (
-        <aside className="panel h-fit md:sticky md:top-4">
-          <h2 className="mb-3 text-lg font-bold">{editing ? 'Modifier la question' : 'Ajouter une question'}</h2>
-          <form onSubmit={(e) => { e.preventDefault(); save.mutate(); }}>
-            <label className="label" htmlFor="qt">Type</label>
-            <select id="qt" className="input mb-3" disabled={!!editing} value={f.type} onChange={(e) => setF({ ...f, type: e.target.value })}>
-              {Object.entries(TYPES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
-            </select>
-            <label className="label" htmlFor="ql">Question</label>
-            <input id="ql" className="input mb-3" required value={f.label} onChange={(e) => setF({ ...f, label: e.target.value })} />
-            {choice && (
-              <fieldset className="mb-3">
-                <legend className="label">Choix</legend>
-                {f.options.map((o, i) => (
-                  <div key={i} className="mb-2 flex gap-2">
-                    <input className="input" aria-label={`Choix ${i + 1}`} value={o.label} onChange={(e) => setOpt(i, { label: e.target.value })} />
-                    <button type="button" aria-label="Retirer ce choix" className={iconBtn} onClick={() => setF({ ...f, options: f.options.filter((_, j) => j !== i) })}><X size={16} /></button>
-                  </div>
-                ))}
-                <button type="button" className="btn-ghost" onClick={() => setF({ ...f, options: [...f.options, { label: '', value: '' }] })}><Plus size={15} /> Ajouter un choix</button>
-              </fieldset>
-            )}
-            {f.type === 'number' && (
-              <div className="mb-3 grid grid-cols-2 gap-2">
-                <div><label className="label" htmlFor="mn">Minimum</label><input id="mn" type="number" className="input" value={f.min} onChange={(e) => setF({ ...f, min: e.target.value })} /></div>
-                <div><label className="label" htmlFor="mx">Maximum</label><input id="mx" type="number" className="input" value={f.max} onChange={(e) => setF({ ...f, max: e.target.value })} /></div>
-              </div>
-            )}
-            {sections.length > 0 && (
-              <>
-                <label className="label" htmlFor="qs">Section</label>
-                <select id="qs" className="input mb-3" value={f.section_id} onChange={(e) => setF({ ...f, section_id: e.target.value })}>
-                  <option value="">Sans section</option>
-                  {sections.map((s) => <option key={s.id} value={s.id}>{s.title}</option>)}
-                </select>
-              </>
-            )}
-            <label className="mb-3 flex items-center gap-2"><input type="checkbox" checked={f.required} onChange={(e) => setF({ ...f, required: e.target.checked })} /> Réponse obligatoire</label>
-            {sources.length > 0 && (
-              <fieldset className="mb-3 rounded-lg border border-forest/15 p-3">
-                <legend className="px-1 text-sm font-semibold">Condition d’affichage (facultatif)</legend>
-                <select className="input mb-2" aria-label="Question de départ" value={f.source} onChange={(e) => setF({ ...f, source: e.target.value, value: '' })}>
-                  <option value="">Toujours afficher</option>
-                  {sources.map((q) => <option key={q.id} value={q.id}>Si « {q.label} »</option>)}
-                </select>
-                {f.source && (
-                  <>
-                    <select className="input mb-2" aria-label="Opérateur" value={f.operator} onChange={(e) => setF({ ...f, operator: e.target.value })}>
-                      {Object.entries(OPERATORS).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
-                    </select>
-                    <RuleValue source={source} value={f.value} onChange={(v) => setF({ ...f, value: v })} />
-                  </>
-                )}
-              </fieldset>
-            )}
-            <div className="flex gap-2">
-              <button className="btn flex-1" disabled={save.isPending}>{editing ? 'Enregistrer' : 'Ajouter'}</button>
-              {editing && <button type="button" className="btn-ghost" onClick={reset}>Annuler</button>}
-            </div>
-          </form>
-        </aside>
-      )}
+  return <div className="space-y-5">
+    {error && <p className="error" role="alert">{error}</p>}
+    <div className="flex flex-wrap items-center justify-between gap-3">
+      <div><h2 className="text-xl font-bold">Structure du formulaire</h2><p className="text-sm text-forest/70">Organisez votre enquête en étapes. Chaque étape peut contenir plusieurs questions.</p></div>
+      {!readOnly && <button className="btn" onClick={() => { setEditingSection(null); setSectionForm({ title: '', description: '' }); setShowSectionForm(true); }}><FolderPlus size={16}/> Ajouter une étape</button>}
     </div>
-  );
+    {showSectionForm && !readOnly && <form className="panel space-y-3" onSubmit={(e) => { e.preventDefault(); saveSection.mutate(); }}>
+      <h3 className="font-bold">{editingSection ? 'Modifier l’étape' : 'Nouvelle étape'}</h3>
+      <div><label className="label">Titre de l’étape</label><input className="input" required maxLength={200} placeholder="Ex. Identification du répondant" value={sectionForm.title} onChange={(e) => setSectionForm({ ...sectionForm, title: e.target.value })}/></div>
+      <div><label className="label">Description (facultative)</label><textarea className="input" rows={2} maxLength={2000} placeholder="Expliquez brièvement ce que le participant doit renseigner…" value={sectionForm.description} onChange={(e) => setSectionForm({ ...sectionForm, description: e.target.value })}/></div>
+      <div className="flex justify-end gap-2"><button type="button" className="btn-ghost" onClick={() => { setShowSectionForm(false); setEditingSection(null); }}>Annuler</button><button className="btn" disabled={saveSection.isPending}>Enregistrer l’étape</button></div>
+    </form>}
+    {sections.length === 0 && <div className="panel text-center"><h3 className="font-semibold">Aucune étape pour le moment</h3><p className="mt-1 text-sm text-forest/70">Commencez par créer la première étape de votre formulaire.</p>{!readOnly && <button className="btn mt-3" onClick={() => setShowSectionForm(true)}><Plus size={16}/> Créer l’étape 1</button>}</div>}
+    <div className="space-y-4">
+      {[...sections].sort((a,b) => a.position-b.position).map((section, index) => {
+        const qs = sectionQuestions(section.id);
+        const stepSources = ordered.filter((q) => q.section_id !== section.id && !['note','geolocation'].includes(q.type) && (sections.find((s) => s.id === q.section_id)?.position ?? -1) < section.position);
+        return <section key={section.id} className={`overflow-hidden rounded-xl border ${activeSection === section.id ? 'border-forest ring-1 ring-forest/20' : 'border-forest/15'}`}>
+          <div className="flex flex-wrap items-start justify-between gap-3 bg-forest/5 p-4">
+            <button className="min-w-0 flex-1 text-left" onClick={() => setActiveSection(section.id)}><p className="text-xs font-bold uppercase tracking-wider text-forest/60">Étape {index + 1} · {qs.length} question(s)</p><h3 className="mt-1 text-lg font-bold">{section.title}</h3>{section.description && <p className="mt-1 text-sm text-forest/75">{section.description}</p>}</button>
+            {!readOnly && <div className="flex items-center gap-1"><button className={iconBtn} title="Monter" disabled={index===0} onClick={() => moveSection(section,-1)}><ArrowUp size={16}/></button><button className={iconBtn} title="Descendre" disabled={index===sections.length-1} onClick={() => moveSection(section,1)}><ArrowDown size={16}/></button><button className={iconBtn} title="Modifier l’étape" onClick={() => editStep(section)}><Pencil size={16}/></button><button className={iconBtn} title="Supprimer l’étape" onClick={() => window.confirm('Supprimer cette étape ? Les questions seront conservées sans étape.') && simple.mutate({path:`/sections/${section.id}`,method:'DELETE'})}><Trash2 size={16}/></button></div>}
+          </div>
+          <div className="space-y-3 p-4">
+            {section.rules?.length > 0 && <p className="rounded-lg bg-amber-50 p-2 text-sm">Cette étape est conditionnelle : {section.rules.map((r) => { const src=ordered.find((q)=>q.id===r.source_question_id); return src ? `« ${src.label} » ${OPERATORS[r.operator] || r.operator} ${r.value}` : ''; }).filter(Boolean).join(' et ')}</p>}
+            {qs.length === 0 && <p className="rounded-lg border border-dashed border-forest/20 p-4 text-center text-sm text-forest/60">Aucune question dans cette étape.</p>}
+            {qs.map((q, qi) => <div key={q.id} className="panel flex items-start gap-3">
+              <span className="mt-0.5 text-sm font-bold text-forest/50">{qi+1}.</span><div className="min-w-0 flex-1"><p className="font-semibold">{q.label}{q.required && ' *'}</p><p className="text-sm text-forest/65">{TYPES[q.type] || q.type}{q.options?.length ? ` · ${q.options.map(o=>o.label).join(', ')}${q.settings?.allow_other ? ', Autre' : ''}` : ''}</p>{q.description && <p className="mt-1 text-sm">{q.description}</p>}{q.rules?.length>0 && <p className="mt-1 text-xs text-forest/65">Condition : {q.rules.map(r=>{const src=ordered.find(x=>x.id===r.source_question_id);return src?`« ${src.label} » ${OPERATORS[r.operator]||r.operator} ${r.value}`:''}).join(' et ')}</p>}</div>
+              {!readOnly && <div className="flex shrink-0 gap-1"><button className={iconBtn} title="Modifier" onClick={()=>editQuestion(q)}><Pencil size={15}/></button><button className={iconBtn} title="Dupliquer" onClick={()=>simple.mutate({path:`/questions/${q.id}/duplicate`,method:'POST'})}><Copy size={15}/></button><button className={iconBtn} title="Supprimer" onClick={()=>window.confirm('Supprimer cette question ?')&&simple.mutate({path:`/questions/${q.id}`,method:'DELETE'})}><Trash2 size={15}/></button></div>}
+            </div>)}
+            {!readOnly && <div className="flex flex-wrap items-center gap-2"><button className="btn" onClick={()=>{reset();setActiveSection(section.id);}}><Plus size={16}/> Ajouter une question</button><label className="text-sm text-forest/70">Déplacer une question vers cette étape : <select className="input mt-1" value="" onChange={(e)=>{const q=ordered.find(x=>String(x.id)===e.target.value);if(q)moveQuestion(q,section.id);}}><option value="">Choisir une question…</option>{ordered.filter(q=>q.section_id!==section.id).map(q=><option key={q.id} value={q.id}>{q.label}</option>)}</select></label></div>}
+            {!readOnly && stepSources.length>0 && <SectionConditions section={section} sources={stepSources} onSave={(rules)=>simple.mutate({path:`/sections/${section.id}`,method:'PUT',body:{title:section.title,description:section.description,rules}})}/>}
+          </div>
+        </section>;
+      })}
+    </div>
+    {!readOnly && <aside className="panel space-y-3" id="question-editor">
+      <div className="flex items-center justify-between"><h2 className="text-lg font-bold">{editing?'Modifier la question':'Nouvelle question'}</h2>{editing&&<button className="btn-ghost" onClick={reset}><X size={16}/> Annuler</button>}</div>
+      <form className="space-y-3" onSubmit={(e)=>{e.preventDefault();save.mutate();}}>
+        <div><label className="label">Étape</label><select className="input" value={f.section_id} onChange={(e)=>setF({...f,section_id:e.target.value})}><option value="">Sans étape</option>{sections.map(s=><option key={s.id} value={s.id}>{s.title}</option>)}</select></div>
+        <div><label className="label">Type de question</label><select className="input" disabled={!!editing} value={f.type} onChange={(e)=>setF({...f,type:e.target.value})}>{Object.entries({short_text:'Réponse courte',long_text:'Réponse longue',integer:'Nombre entier',decimal:'Nombre décimal',single_choice:'Choix unique',dropdown:'Liste déroulante',multiple_choice:'Choix multiple',yes_no:'Oui / Non',date:'Date',time:'Heure',datetime:'Date et heure',scale:'Échelle de notation',location:'Lieu / adresse',geolocation:'Position GPS',note:'Texte informatif'}).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select></div>
+        <div><label className="label">Intitulé de la question ou consigne</label><input className="input" required maxLength={500} value={f.label} onChange={(e)=>setF({...f,label:e.target.value})} placeholder="Ex. Disposez-vous d'un accès à l'eau potable ?"/></div>
+        <div><label className="label">Description ou aide (facultative)</label><textarea className="input" rows={2} maxLength={2000} value={f.description} onChange={(e)=>setF({...f,description:e.target.value})} placeholder="Précisez ce qui est attendu…"/></div>
+        {choice && <fieldset className="space-y-2"><legend className="label">Options de réponse</legend>{f.options.map((o,i)=><div className="flex gap-2" key={i}><input className="input" required aria-label={`Option ${i+1}`} placeholder={`Option ${i+1}`} value={o.label} onChange={(e)=>setF({...f,options:f.options.map((x,j)=>j===i?{...x,label:e.target.value}:x)})}/><button type="button" className={iconBtn} aria-label="Supprimer l’option" onClick={()=>setF({...f,options:f.options.filter((_,j)=>j!==i)})}><X size={16}/></button></div>)}<button type="button" className="btn-ghost" onClick={()=>setF({...f,options:[...f.options,{label:'',value:''}]})}><Plus size={15}/> Ajouter une option</button>{['single_choice','multiple_choice'].includes(f.type)&&<label className="mt-2 flex items-start gap-2 text-sm"><input type="checkbox" checked={f.allow_other} onChange={(e)=>setF({...f,allow_other:e.target.checked})}/> <span><strong>Ajouter un choix « Autre »</strong><span className="block text-xs text-forest/65">Le participant pourra préciser sa propre réponse.</span></span></label>}</fieldset>}
+        {['integer','decimal','number','scale'].includes(f.type)&&<div className="grid grid-cols-2 gap-2"><div><label className="label">Minimum</label><input className="input" type="number" value={f.min} onChange={(e)=>setF({...f,min:e.target.value})}/></div><div><label className="label">Maximum</label><input className="input" type="number" value={f.max} onChange={(e)=>setF({...f,max:e.target.value})}/></div></div>}
+        {['short_text','long_text','location'].includes(f.type)&&<div className="grid grid-cols-2 gap-2"><div><label className="label">Longueur min.</label><input className="input" type="number" min="0" value={f.min_length} onChange={(e)=>setF({...f,min_length:e.target.value})}/></div><div><label className="label">Longueur max.</label><input className="input" type="number" min="1" value={f.max_length} onChange={(e)=>setF({...f,max_length:e.target.value})}/></div></div>}
+        {['short_text','long_text'].includes(f.type)&&<div><label className="label">Format attendu</label><select className="input" value={f.format} onChange={(e)=>setF({...f,format:e.target.value})}><option value="">Texte libre</option><option value="email">Adresse e-mail</option><option value="phone">Téléphone</option><option value="url">Adresse web</option></select></div>}
+        {f.type!=='note'&&<label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={f.required} onChange={(e)=>setF({...f,required:e.target.checked})}/> Réponse obligatoire</label>}
+        {sources.length>0&&<fieldset className="space-y-2 rounded-lg border border-forest/15 p-3"><legend className="px-1 text-sm font-semibold">Condition d’affichage (facultatif)</legend><select className="input" value={f.source} onChange={(e)=>setF({...f,source:e.target.value,value:''})}><option value="">Toujours afficher</option>{sources.map(q=><option key={q.id} value={q.id}>{q.label}</option>)}</select>{f.source&&<><select className="input" value={f.operator} onChange={(e)=>setF({...f,operator:e.target.value})}>{Object.entries(OPERATORS).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select><RuleValue source={source} value={f.value} onChange={(v)=>setF({...f,value:v})}/></>}</fieldset>}
+        <button className="btn w-full" disabled={save.isPending}>{save.isPending?'Enregistrement…':editing?'Enregistrer la question':'Ajouter la question'}</button>
+      </form>
+    </aside>}
+    <p className="text-sm text-forest/65">Chaque modification est enregistrée automatiquement. Les participants ne voient les changements qu'après publication d'une nouvelle version.</p>
+  </div>;
 }
 
-function Preview({ questions }) {
+function SectionConditions({ section, sources, onSave }) {
+  const [open, setOpen] = useState(false);
+  const [sourceId, setSourceId] = useState(section.rules?.[0]?.source_question_id ?? '');
+  const [operator, setOperator] = useState(section.rules?.[0]?.operator ?? 'equals');
+  const [value, setValue] = useState(section.rules?.[0]?.value ?? '');
+  const source = sources.find((q) => String(q.id) === String(sourceId));
+  return <div className="rounded-lg border border-dashed border-forest/20 p-3"><button className="text-sm font-semibold underline" onClick={()=>setOpen(!open)}>{section.rules?.length ? 'Modifier la condition de cette étape' : 'Ajouter une condition à cette étape'}</button>{open&&<div className="mt-3 grid gap-2 sm:grid-cols-3"><select className="input" value={sourceId} onChange={(e)=>{setSourceId(e.target.value);setValue('');}}><option value="">Question précédente…</option>{sources.map(q=><option key={q.id} value={q.id}>{q.label}</option>)}</select><select className="input" value={operator} onChange={(e)=>setOperator(e.target.value)}>{Object.entries(OPERATORS).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select>{source?.type==='yes_no'?<select className="input" value={value} onChange={(e)=>setValue(e.target.value)}><option value="">Choisir…</option><option value="true">Oui</option><option value="false">Non</option></select>:<input className="input" placeholder="Valeur attendue" value={value} onChange={(e)=>setValue(e.target.value)}/>}<div className="sm:col-span-3 flex justify-end gap-2"><button className="btn-ghost" onClick={()=>onSave([])}>Supprimer la condition</button><button className="btn" disabled={!sourceId || value===''} onClick={()=>onSave([{source_question_id:Number(sourceId),operator,value:String(value)}])}>Enregistrer la condition</button></div></div>}</div>;
+}
+
+function Preview({ questions, sections = [] }) {
   const [answers, setAnswers] = useState({});
-  const visible = visibleQuestions(questions, answers);
-  return (
-    <div className="mx-auto max-w-xl">
-      <p className="panel mb-3 text-sm">Aperçu du formulaire tel que le verront les participants. Rien n’est enregistré.</p>
-      {visible.length === 0 && <p className="panel">Ajoutez des questions pour voir l’aperçu.</p>}
-      {visible.map((q) => <PreviewQuestion key={q.id} q={q} value={answers[q.id]} onChange={(v) => setAnswers({ ...answers, [q.id]: v })} />)}
-    </div>
-  );
+  const [step, setStep] = useState(0);
+  const steps = sections.length ? buildVisibleSteps(sections, questions, answers) : [{ id: 'all', title: 'Questions', description: '', questions: visibleQuestions(questions, answers) }];
+  const current = steps[Math.min(step, Math.max(steps.length - 1, 0))];
+  return <div className="mx-auto max-w-xl space-y-3">
+    <p className="panel text-sm">Aperçu interactif du formulaire. Les réponses saisies ici ne sont pas enregistrées.</p>
+    {steps.length === 0 && <p className="panel">Ajoutez des étapes et des questions pour voir l’aperçu.</p>}
+    {current && <><div className="panel"><p className="text-xs font-bold uppercase tracking-wide text-forest/60">Étape {step+1} sur {steps.length}</p><h2 className="mt-1 text-xl font-bold">{current.title}</h2>{current.description&&<p className="mt-1 text-sm">{current.description}</p>}<div className="mt-3 h-2 overflow-hidden rounded-full bg-forest/10"><div className="h-2 rounded-full bg-forest" style={{width:`${((step+1)/steps.length)*100}%`}}/></div></div>
+      {current.questions.map((q)=><PreviewQuestion key={q.id} q={q} value={answers[q.id]} onChange={(v)=>setAnswers((old)=>({...old,[q.id]:v}))}/>)}
+      <div className="flex justify-between"><button className="btn-ghost" disabled={step===0} onClick={()=>setStep((n)=>Math.max(0,n-1))}>← Précédent</button><button className="btn" disabled={step>=steps.length-1} onClick={()=>setStep((n)=>Math.min(steps.length-1,n+1))}>Étape suivante →</button></div>
+    </>}
+  </div>;
 }
 
 function History({ study }) {

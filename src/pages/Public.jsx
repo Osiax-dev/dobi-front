@@ -9,66 +9,124 @@ import { enqueue } from '../offline';
 import { OfflineBanner, PendingBanner } from '../pwa';
 import { CloudOff } from 'lucide-react';
 
-// Mêmes règles que l'API (SubmissionValidator) pour décider quelles questions sont visibles.
+// Valeur réservée pour conserver le texte saisi dans le choix « Autre ».
+const OTHER_PREFIX = '__dobi_other__:';
+const isOtherValue = (v) => typeof v === 'string' && v.startsWith(OTHER_PREFIX);
+const otherText = (v) => isOtherValue(v) ? v.slice(OTHER_PREFIX.length) : '';
+const isOtherSelected = (v) => isOtherValue(v);
+
+// Évaluation des règles conditionnelles, alignée sur SubmissionValidator Laravel.
 function evaluate(answer, op, value) {
+  if (op === 'answered') return !isEmpty(answer);
+  if (op === 'not_answered') return isEmpty(answer);
   if (answer === undefined || answer === null) return op === 'not_equals';
-  const str = (v) => (typeof v === 'boolean' ? String(v) : String(v));
+  const str = (v) => typeof v === 'boolean' ? String(v) : String(v);
   const expected = String(value ?? '');
-  const eq = Array.isArray(answer) ? answer.map(str).includes(expected) : str(answer) === expected;
+  const matches = (v) => expected === '__other__' ? isOtherValue(v) : str(v) === expected;
+  const eq = Array.isArray(answer) ? answer.some(matches) : matches(answer);
   if (op === 'equals') return eq;
   if (op === 'not_equals') return !eq;
-  if (op === 'contains') return Array.isArray(answer) ? eq : str(answer).toLowerCase().includes(expected.toLowerCase());
+  if (op === 'contains') return Array.isArray(answer) || expected === '__other__' ? eq : str(answer).toLowerCase().includes(expected.toLowerCase());
   if (op === 'gt') return Number(answer) > Number(value);
+  if (op === 'gte') return Number(answer) >= Number(value);
   if (op === 'lt') return Number(answer) < Number(value);
+  if (op === 'lte') return Number(answer) <= Number(value);
   return false;
 }
-const isEmpty = (v) => v === undefined || v === null || v === '' || (Array.isArray(v) && v.length === 0);
+const isEmpty = (v) => v === undefined || v === null || v === '' || (isOtherValue(v) && otherText(v).trim() === '') || (Array.isArray(v) && (v.length === 0 || v.every((x) => isOtherValue(x) && otherText(x).trim() === '')));
+const rulesPass = (rules = [], answers = {}) => rules.every((r) => evaluate(answers[r.source_question_id], r.operator, r.value));
 export const visibleQuestions = (qs, answers) => {
   const clean = {};
   const out = [];
   for (const q of qs) {
-    if (q.rules.every((r) => evaluate(clean[r.source_question_id], r.operator, r.value))) {
+    if (rulesPass(q.rules, clean)) {
       out.push(q);
       if (!isEmpty(answers[q.id])) clean[q.id] = answers[q.id];
     }
   }
   return out;
 };
+export const visibleSections = (sections, questions, answers) => {
+  const sorted = [...sections].sort((a,b) => a.position-b.position);
+  const clean = {};
+  // Les questions sans étape sont placées avant les étapes dans l'ordre du backend.
+  for (const q of questions.filter((item) => !item.section_id)) {
+    if (rulesPass(q.rules, clean) && !isEmpty(answers[q.id])) clean[q.id] = answers[q.id];
+  }
+  const result = [];
+  for (const section of sorted) {
+    const visible = rulesPass(section.rules, clean);
+    if (visible) result.push(section);
+    if (visible) {
+      for (const q of questions.filter((item) => item.section_id === section.id)) {
+        if (rulesPass(q.rules, clean) && !isEmpty(answers[q.id])) clean[q.id] = answers[q.id];
+      }
+    }
+  }
+  return result;
+};
+export const buildVisibleSteps = (sections, questions, answers) => {
+  const clean = {};
+  const groups = [];
+  const loose = [];
+  for (const q of questions.filter((item) => !item.section_id)) {
+    if (rulesPass(q.rules, clean)) {
+      loose.push(q);
+      if (!isEmpty(answers[q.id])) clean[q.id] = answers[q.id];
+    }
+  }
+  if (loose.length) groups.push({ id: 'loose', title: 'Questions générales', description: '', questions: loose });
+  for (const section of [...sections].sort((a,b)=>a.position-b.position)) {
+    if (!rulesPass(section.rules, clean)) continue;
+    const sectionQuestions = [];
+    for (const q of questions.filter((item)=>item.section_id===section.id)) {
+      if (!rulesPass(q.rules, clean)) continue;
+      sectionQuestions.push(q);
+      if (!isEmpty(answers[q.id])) clean[q.id] = answers[q.id];
+    }
+    if (sectionQuestions.length || section.description || section.title) groups.push({ ...section, questions: sectionQuestions });
+  }
+  return groups;
+};
 
 function Input({ q, value, onChange }) {
   const set = (v) => onChange(v);
   switch (q.type) {
+    case 'note': return null;
     case 'long_text': return <textarea className="input" rows={4} value={value ?? ''} onChange={(e) => set(e.target.value)} />;
-    case 'single_choice':
-      return q.options.map((o) => (
-        <label key={o.value} className="mb-1 flex items-center gap-2"><input type="radio" name={`q${q.id}`} checked={value === o.value} onChange={() => set(o.value)} /> {o.label}</label>
-      ));
-    case 'multiple_choice':
-      return q.options.map((o) => {
-        const cur = value || [];
-        return <label key={o.value} className="mb-1 flex items-center gap-2"><input type="checkbox" checked={cur.includes(o.value)} onChange={() => set(cur.includes(o.value) ? cur.filter((x) => x !== o.value) : [...cur, o.value])} /> {o.label}</label>;
-      });
-    case 'yes_no':
-      return (
-        <div className="flex gap-4">
-          {[[true, 'Oui'], [false, 'Non']].map(([v, l]) => (
-            <label key={l} className="flex items-center gap-2"><input type="radio" name={`q${q.id}`} checked={value === v} onChange={() => set(v)} /> {l}</label>
-          ))}
-        </div>
-      );
-    case 'scale': {
-      const min = q.settings?.min ?? 1, max = q.settings?.max ?? 5;
-      return (
-        <div className="flex flex-wrap gap-2">
-          {Array.from({ length: max - min + 1 }, (_, i) => min + i).map((n) => (
-            <button type="button" key={n} onClick={() => set(n)} className={value === n ? 'btn' : 'btn-ghost'} aria-pressed={value === n}>{n}</button>
-          ))}
-        </div>
-      );
+    case 'single_choice': {
+      const other = isOtherSelected(value);
+      return <>
+        {q.options.map((o) => <label key={o.value} className="mb-2 flex items-center gap-2"><input type="radio" name={`q${q.id}`} checked={!other && value === o.value} onChange={() => set(o.value)} /> {o.label}</label>)}
+        {q.settings?.allow_other && <div className="mt-2">
+          <label className="mb-2 flex items-center gap-2"><input type="radio" name={`q${q.id}`} checked={other} onChange={() => set(`${OTHER_PREFIX}${otherText(value)}`)} /> Autre</label>
+          {other && <input className="input" type="text" maxLength={2000} value={otherText(value)} onChange={(e) => set(`${OTHER_PREFIX}${e.target.value}`)} placeholder="Précisez votre réponse…" aria-label={`Précisez votre réponse pour ${q.label}`} />}
+        </div>}
+      </>;
     }
-    case 'number': return <input className="input" type="number" value={value ?? ''} onChange={(e) => set(e.target.value === '' ? '' : Number(e.target.value))} />;
-    case 'date': return <input className="input" type="date" value={value ?? ''} onChange={(e) => set(e.target.value)} />;
-    default: return <input className="input" value={value ?? ''} onChange={(e) => set(e.target.value)} />;
+    case 'dropdown': return <select className="input" value={value ?? ''} onChange={(e)=>set(e.target.value)}><option value="">Sélectionner…</option>{q.options.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</select>;
+    case 'multiple_choice': {
+      const cur = Array.isArray(value) ? value : [];
+      const otherValue = cur.find(isOtherValue) || `${OTHER_PREFIX}`;
+      const other = cur.some(isOtherValue);
+      const toggle = (v) => set(cur.includes(v) ? cur.filter((x) => x !== v) : [...cur, v]);
+      return <>
+        {q.options.map((o) => <label key={o.value} className="mb-2 flex items-center gap-2"><input type="checkbox" checked={cur.includes(o.value)} onChange={() => toggle(o.value)} /> {o.label}</label>)}
+        {q.settings?.allow_other && <div className="mt-2">
+          <label className="mb-2 flex items-center gap-2"><input type="checkbox" checked={other} onChange={() => toggle(otherValue)} /> Autre</label>
+          {other && <input className="input" type="text" maxLength={2000} value={otherText(otherValue)} onChange={(e) => set(cur.map((x) => isOtherValue(x) ? `${OTHER_PREFIX}${e.target.value}` : x))} placeholder="Précisez votre réponse…" aria-label={`Précisez votre réponse pour ${q.label}`} />}
+        </div>}
+      </>;
+    }
+    case 'yes_no': return <div className="flex flex-wrap gap-3">{[[true, 'Oui'], [false, 'Non']].map(([v,l])=><label key={l} className={`flex min-w-28 flex-1 items-center gap-2 rounded-lg border p-3 ${value===v?'border-forest bg-forest/5':''}`}><input type="radio" name={`q${q.id}`} checked={value===v} onChange={()=>set(v)}/>{l}</label>)}</div>;
+    case 'scale': { const min=q.settings?.min??1,max=q.settings?.max??5; return <div className="flex flex-wrap gap-2">{Array.from({length:Math.max(0,max-min+1)},(_,i)=>min+i).map(n=><button type="button" key={n} onClick={()=>set(n)} className={value===n?'btn':'btn-ghost'} aria-pressed={value===n}>{n}</button>)}</div>; }
+    case 'integer': return <input className="input" type="number" step="1" value={value??''} onChange={(e)=>set(e.target.value===''?'':Number(e.target.value))}/>;
+    case 'decimal': case 'number': return <input className="input" type="number" step="any" value={value??''} onChange={(e)=>set(e.target.value===''?'':Number(e.target.value))}/>;
+    case 'date': return <input className="input" type="date" value={value??''} onChange={(e)=>set(e.target.value)}/>;
+    case 'time': return <input className="input" type="time" value={value??''} onChange={(e)=>set(e.target.value)}/>;
+    case 'datetime': return <input className="input" type="datetime-local" value={value??''} onChange={(e)=>set(e.target.value)}/>;
+    case 'geolocation': return <div className="space-y-2"><button type="button" className="btn-ghost" onClick={()=>{if(!navigator.geolocation)return; navigator.geolocation.getCurrentPosition((p)=>set({lat:p.coords.latitude,lng:p.coords.longitude,accuracy:p.coords.accuracy}),()=>{});}}>Obtenir ma position GPS</button>{value?.lat!==undefined&&<p className="text-sm text-forest/70">Position relevée : {Number(value.lat).toFixed(5)}, {Number(value.lng).toFixed(5)}</p>}</div>;
+    default: return <input className="input" value={value??''} onChange={(e)=>set(e.target.value)}/>;
   }
 }
 
@@ -119,161 +177,74 @@ export function PublicStudy() {
   const [message, setMessage] = useState('');
   const [receipt, setReceipt] = useState('');
   const [busy, setBusy] = useState(false);
-  // Jeton propre à cette réponse : un renvoi après coupure ne crée jamais de doublon.
   const [token] = useState(() => crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`);
 
   const questions = data.data?.questionnaire?.questions || [];
-  const visible = useMemo(() => visibleQuestions(questions, answers), [questions, answers]);
+  const sections = data.data?.questionnaire?.sections || [];
+  const steps = useMemo(() => {
+    if (!sections.length) return [{ id: 'all', title: 'Questions', description: '', questions: visibleQuestions(questions, answers) }];
+    return buildVisibleSteps(sections, questions, answers);
+  }, [sections, questions, answers]);
+  const allVisible = steps.flatMap((group)=>group.questions);
 
   if (data.isLoading) return <PublicShell><p>Chargement…</p></PublicShell>;
   if (data.isError) {
     const closed = data.error.status === 410;
-    return (
-      <PublicShell>
-        <div className="panel text-center">
-          <h1 className="text-2xl font-bold">{closed ? 'Cette étude est clôturée' : 'Étude indisponible'}</h1>
-          <p className="mt-2">{closed ? 'La collecte est terminée. Merci de votre intérêt.' : 'Cette étude n’existe pas, n’est pas encore ouverte ou n’est plus accessible.'}</p>
-        </div>
-      </PublicShell>
-    );
+    return <PublicShell><div className="panel text-center"><h1 className="text-2xl font-bold">{closed ? 'Cette étude est clôturée' : 'Étude indisponible'}</h1><p className="mt-2">{closed ? 'La collecte est terminée. Merci de votre intérêt.' : 'Cette étude n’existe pas, n’est pas encore ouverte ou n’est plus accessible.'}</p></div></PublicShell>;
   }
 
   const { study, privacy_notice: notice } = data.data;
   const org = study.organization;
   const identified = study.privacy_mode === 'identified';
-  const conversational = study.collection_mode === 'conversational';
   const minutes = Math.max(1, Math.round(questions.length / 2));
-  const set = (id, v) => { setAnswers({ ...answers, [id]: v }); if (errors[id]) setErrors({ ...errors, [id]: undefined }); };
-  const answered = visible.filter((q) => !isEmpty(answers[q.id])).length;
+  const currentIndex = Math.min(step, Math.max(steps.length-1,0));
+  const currentStep = steps[currentIndex];
+  const currentQuestions = currentStep?.questions || [];
+  const answered = allVisible.filter(q=>!isEmpty(answers[q.id])).length;
+  const set = (id, v) => { setAnswers((old)=>({...old,[id]:v})); setErrors((old)=>({...old,[id]:undefined})); };
 
   const submit = async () => {
     setBusy(true); setMessage(''); setErrors({});
     const clean = {};
-    visible.forEach((q) => { if (!isEmpty(answers[q.id])) clean[q.id] = answers[q.id]; });
+    allVisible.forEach((q) => { if (!isEmpty(answers[q.id])) clean[q.id] = answers[q.id]; });
     const body = { answers: clean, website: trap, client_token: token, version: data.data.version, ...(identified ? { participant: who, consent } : {}) };
     const saveOffline = async () => { await enqueue({ id: token, slug, title: study.title, body }); setPhase('queued'); window.scrollTo({ top: 0 }); };
     if (!navigator.onLine) { await saveOffline(); setBusy(false); return; }
     try {
       const res = await api(`/public/studies/${slug}/responses`, { method: 'POST', auth: false, body });
-      setReceipt(res.receipt || '');
-      setPhase('done');
-      window.scrollTo({ top: 0 });
+      setReceipt(res.receipt || ''); setPhase('done'); window.scrollTo({ top: 0 });
     } catch (e) {
-      if (!e.status) { await saveOffline(); setBusy(false); return; } // coupure réseau : on garde la réponse sur l'appareil
+      if (!e.status) { await saveOffline(); setBusy(false); return; }
       const map = {};
       Object.entries(e.errors || {}).forEach(([k, v]) => { map[k.replace('answers.', '')] = v; });
       setErrors(map);
       setMessage(e.status === 429 ? 'Trop de tentatives. Patientez une minute puis réessayez.' : e.errors ? 'Corrigez les champs signalés ci-dessous.' : e.message);
-      if (conversational) { const first = visible.findIndex((q) => map[q.id]); setStep(first >= 0 ? first : visible.length - 1); }
+      const firstStep = steps.findIndex(g=>g.questions.some(q=>map[q.id]));
+      if(firstStep>=0)setStep(firstStep);
     } finally { setBusy(false); }
   };
-
   const next = () => {
-    const q = visible[step];
-    if (q.required && isEmpty(answers[q.id])) { setErrors({ [q.id]: ['Cette question est obligatoire.'] }); return; }
-    setErrors({});
-    setStep(step + 1);
+    const missing = currentQuestions.find(q=>q.type!=='note' && q.required && isEmpty(answers[q.id]));
+    if(missing){setErrors({[missing.id]:['Cette question est obligatoire.']});return;}
+    setErrors({}); setStep(Math.min(currentIndex+1,steps.length-1)); window.scrollTo({top:0,behavior:'smooth'});
   };
+  const previous = () => { setStep(Math.max(0,currentIndex-1)); window.scrollTo({top:0,behavior:'smooth'}); };
 
-  if (phase === 'queued') {
-    return (
-      <PublicShell orgName={org.name} orgSlug={org.slug}>
-        <div className="panel text-center">
-          <CloudOff size={44} strokeWidth={1.5} className="mx-auto text-forest" />
-          <h1 className="mt-3 text-2xl font-bold">Réponse enregistrée sur cet appareil</h1>
-          <p className="mt-2">Elle sera envoyée automatiquement dès que la connexion reviendra. Gardez ce navigateur sur cet appareil.</p>
-        </div>
-      </PublicShell>
-    );
-  }
+  if (phase === 'queued') return <PublicShell orgName={org.name} orgSlug={org.slug}><div className="panel text-center"><CloudOff size={44} strokeWidth={1.5} className="mx-auto text-forest"/><h1 className="mt-3 text-2xl font-bold">Réponse enregistrée sur cet appareil</h1><p className="mt-2">Elle sera envoyée automatiquement dès que la connexion reviendra. Gardez ce navigateur sur cet appareil.</p></div></PublicShell>;
+  if (phase === 'done') return <PublicShell orgName={org.name} orgSlug={org.slug}><div className="panel text-center"><CheckCircle2 size={44} strokeWidth={1.5} className="mx-auto text-success"/><h1 className="mt-3 text-3xl font-bold">Merci !</h1><p className="mt-2">Votre réponse à « {study.title} » a bien été enregistrée.</p>{receipt&&<p className="mt-4 text-sm text-forest/70">Numéro de réception<br/><code className="break-all font-semibold text-forest">{receipt}</code></p>}<Link to={`/o/${org.slug}`} className="btn mt-6">Voir les autres études de {org.name}</Link></div></PublicShell>;
+  if (phase === 'intro') return <PublicShell orgName={org.name} orgSlug={org.slug}><section className="rounded-2xl bg-deep p-6 text-white sm:p-8"><p className="text-sm text-white/70">{org.name}{study.category?` — ${study.category}`:''}</p><h1 className="mt-1 text-3xl font-bold sm:text-4xl">{study.title}</h1>{study.description&&<p className="mt-3 text-white/85">{study.description}</p>}<div className="mt-5 flex flex-wrap gap-2"><Chip icon={Clock}>Environ {minutes} min</Chip><Chip icon={ListChecks}>{questions.length} question{questions.length>1?'s':''}</Chip><Chip icon={identified?UserCheck:ShieldCheck}>{identified?'Réponses identifiées':'Réponses anonymes'}</Chip>{study.ends_at&&<Chip icon={CalendarClock}>Jusqu’au {new Date(study.ends_at).toLocaleDateString('fr-FR',{day:'numeric',month:'long'})}</Chip>}</div></section>{study.objective&&<div className="panel mt-4"><h2 className="font-bold">Objectif de l’étude</h2><p className="mt-1">{study.objective}</p></div>}{(study.target_population||study.geographic_zone)&&<p className="mt-4 text-sm">{study.target_population&&<>Public concerné : <strong>{study.target_population}</strong>. </>}{study.geographic_zone&&<>Zone : <strong>{study.geographic_zone}</strong>.</>}</p>}<div className="panel mt-4"><h2 className="font-bold">Vos données</h2><p className="mt-1 text-sm">{notice.text}</p></div><div className="mt-6 flex flex-wrap items-center justify-between gap-4"><button className="btn px-6 py-3 text-base" onClick={()=>setPhase('form')}>Commencer l’enquête</button><div className="flex items-center gap-3 text-xs text-forest/70"><QRCodeSVG value={window.location.href} size={64}/>Scannez pour ouvrir<br/>sur un autre appareil</div></div></PublicShell>;
 
-  if (phase === 'done') {
-    return (
-      <PublicShell orgName={org.name} orgSlug={org.slug}>
-        <div className="panel text-center">
-          <CheckCircle2 size={44} strokeWidth={1.5} className="mx-auto text-success" />
-          <h1 className="mt-3 text-3xl font-bold">Merci !</h1>
-          <p className="mt-2">Votre réponse à « {study.title} » a bien été enregistrée.</p>
-          {receipt && <p className="mt-4 text-sm text-forest/70">Numéro de réception<br /><code className="break-all font-semibold text-forest">{receipt}</code></p>}
-          <Link to={`/o/${org.slug}`} className="btn mt-6">Voir les autres études de {org.name}</Link>
-        </div>
-      </PublicShell>
-    );
-  }
-
-  if (phase === 'intro') {
-    return (
-      <PublicShell orgName={org.name} orgSlug={org.slug}>
-        <section className="rounded-2xl bg-deep p-6 text-white sm:p-8">
-          <p className="text-sm text-white/70">{org.name}{study.category ? ` — ${study.category}` : ''}</p>
-          <h1 className="mt-1 text-3xl font-bold sm:text-4xl">{study.title}</h1>
-          {study.description && <p className="mt-3 text-white/85">{study.description}</p>}
-          <div className="mt-5 flex flex-wrap gap-2">
-            <Chip icon={Clock}>Environ {minutes} min</Chip>
-            <Chip icon={ListChecks}>{questions.length} question{questions.length > 1 ? 's' : ''}</Chip>
-            <Chip icon={identified ? UserCheck : ShieldCheck}>{identified ? 'Réponses identifiées' : 'Réponses anonymes'}</Chip>
-            {study.ends_at && <Chip icon={CalendarClock}>Jusqu’au {new Date(study.ends_at).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' })}</Chip>}
-          </div>
-        </section>
-        {study.objective && <div className="panel mt-4"><h2 className="font-bold">Objectif de l’étude</h2><p className="mt-1">{study.objective}</p></div>}
-        {(study.target_population || study.geographic_zone) && (
-          <p className="mt-4 text-sm">{study.target_population && <>Public concerné : <strong>{study.target_population}</strong>. </>}{study.geographic_zone && <>Zone : <strong>{study.geographic_zone}</strong>.</>}</p>
-        )}
-        <div className="panel mt-4"><h2 className="font-bold">Vos données</h2><p className="mt-1 text-sm">{notice.text}</p></div>
-        <div className="mt-6 flex flex-wrap items-center justify-between gap-4">
-          <button className="btn px-6 py-3 text-base" onClick={() => setPhase('form')}>Commencer l’enquête</button>
-          <div className="flex items-center gap-3 text-xs text-forest/70"><QRCodeSVG value={window.location.href} size={64} />Scannez pour ouvrir<br />sur un autre appareil</div>
-          {navigator.serviceWorker?.controller && <p className="basis-full text-xs text-forest/70">Cette étude reste disponible sur cet appareil même sans connexion.</p>}
-        </div>
-      </PublicShell>
-    );
-  }
-
-  const IdentityBlock = identified && (
-    <div className="panel mb-3">
-      <p className="mb-2 font-semibold">Vos informations</p>
-      {[['full_name', 'Nom complet', 'text'], ['email', 'Adresse e-mail', 'email'], ['phone', 'Téléphone (facultatif)', 'tel']].map(([k, l, t]) => (
-        <div key={k} className="mb-2">
-          <input className="input" type={t} aria-label={l} placeholder={l} value={who[k]} onChange={(e) => setWho({ ...who, [k]: e.target.value })} />
-          {errors[`participant.${k}`] && <p className="mt-1 text-sm text-alert">{errors[`participant.${k}`].join(' ')}</p>}
-        </div>
-      ))}
-      <label className="flex items-start gap-2 text-sm"><input type="checkbox" className="mt-1" checked={consent} onChange={(e) => setConsent(e.target.checked)} /> J’ai lu l’information sur mes données et j’accepte leur traitement.</label>
-      {errors.consent && <p className="mt-1 text-sm text-alert">{errors.consent.join(' ')}</p>}
-    </div>
-  );
-
-  const last = step >= visible.length - 1;
-  const current = visible[Math.min(step, visible.length - 1)];
-
-  return (
-    <PublicShell orgName={org.name} orgSlug={org.slug}>
-      <h1 className="mb-1 text-2xl font-bold">{study.title}</h1>
-      <div className="mb-4" role="progressbar" aria-valuemin={0} aria-valuemax={visible.length} aria-valuenow={conversational ? step + 1 : answered}>
-        <div className="h-2 rounded-full bg-forest/10"><div className="h-2 rounded-full bg-forest" style={{ width: `${((conversational ? step + 1 : answered) / Math.max(visible.length, 1)) * 100}%` }} /></div>
-        <p className="mt-1 text-xs text-forest/70">{conversational ? `Question ${step + 1} sur ${visible.length}` : `${answered} réponse(s) sur ${visible.length} question(s)`}</p>
-      </div>
-      {message && <p className="error mb-3" role="alert">{message}</p>}
-      <input className="hidden" tabIndex={-1} autoComplete="off" aria-hidden="true" value={trap} onChange={(e) => setTrap(e.target.value)} />
-
-      {conversational && current ? (
-        <>
-          <Question q={current} value={answers[current.id]} onChange={(v) => set(current.id, v)} error={errors[current.id]} />
-          {last && IdentityBlock}
-          <div className="flex justify-between gap-3">
-            <button className="btn-ghost" disabled={step === 0} onClick={() => setStep(step - 1)}>Précédent</button>
-            {last ? <button className="btn" disabled={busy} onClick={submit}>Envoyer mes réponses</button> : <button className="btn" onClick={next}>Suivant</button>}
-          </div>
-        </>
-      ) : (
-        <>
-          {visible.map((q) => <Question key={q.id} q={q} value={answers[q.id]} onChange={(v) => set(q.id, v)} error={errors[q.id]} />)}
-          {IdentityBlock}
-          <button className="btn w-full py-3" disabled={busy} onClick={submit}>Envoyer mes réponses</button>
-        </>
-      )}
-    </PublicShell>
-  );
+  const IdentityBlock = identified && currentIndex === steps.length-1 && <div className="panel mt-4"><p className="mb-2 font-semibold">Vos informations</p>{[['full_name','Nom complet','text'],['email','Adresse e-mail','email'],['phone','Téléphone (facultatif)','tel']].map(([k,l,t])=><div key={k} className="mb-2"><input className="input" type={t} aria-label={l} placeholder={l} value={who[k]} onChange={(e)=>setWho({...who,[k]:e.target.value})}/>{errors[`participant.${k}`]&&<p className="mt-1 text-sm text-alert">{errors[`participant.${k}`].join(' ')}</p>}</div>)}<label className="flex items-start gap-2 text-sm"><input type="checkbox" className="mt-1" checked={consent} onChange={(e)=>setConsent(e.target.checked)}/>J’ai lu l’information sur mes données et j’accepte leur traitement.</label>{errors.consent&&<p className="mt-1 text-sm text-alert">{errors.consent.join(' ')}</p>}</div>;
+  const last = currentIndex >= steps.length-1;
+  return <PublicShell orgName={org.name} orgSlug={org.slug}>
+    <h1 className="mb-1 text-2xl font-bold">{study.title}</h1>
+    <div className="mb-5" role="progressbar" aria-valuemin={0} aria-valuemax={steps.length} aria-valuenow={currentIndex+1}><div className="h-2 overflow-hidden rounded-full bg-forest/10"><div className="h-2 rounded-full bg-forest transition-all" style={{width:`${((currentIndex+1)/Math.max(steps.length,1))*100}%`}}/></div><p className="mt-1 text-xs text-forest/70">Étape {currentIndex+1} sur {steps.length} · {answered} réponse(s) sur {allVisible.filter(q=>q.type!=='note').length}</p></div>
+    {message&&<p className="error mb-3" role="alert">{message}</p>}<input className="hidden" tabIndex={-1} autoComplete="off" aria-hidden="true" value={trap} onChange={(e)=>setTrap(e.target.value)}/>
+    <section className="mb-4"><p className="text-xs font-bold uppercase tracking-wider text-forest/60">Étape {currentIndex+1}</p><h2 className="mt-1 text-2xl font-bold">{currentStep?.title||'Questions'}</h2>{currentStep?.description&&<p className="mt-2 text-forest/75">{currentStep.description}</p>}</section>
+    {currentQuestions.map(q=><Question key={q.id} q={q} value={answers[q.id]} onChange={(v)=>set(q.id,v)} error={errors[q.id]?[...errors[q.id]]:null}/>)}
+    {IdentityBlock}
+    <div className="mt-6 flex items-center justify-between gap-3"><button className="btn-ghost" disabled={step===0} onClick={previous}>← Précédent</button>{last?<button className="btn" disabled={busy} onClick={submit}>{busy?'Envoi…':'Soumettre le formulaire'}</button>:<button className="btn" onClick={next}>Étape suivante →</button>}</div>
+  </PublicShell>;
 }
 
 export function PublicOrg() {

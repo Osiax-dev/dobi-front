@@ -88,6 +88,12 @@ export default function Results({ study, orgName }) {
           <p className="mb-2 text-sm text-forest/70">{q.n} réponse(s){q.response_rate != null && ` — ${q.response_rate} % des participants`}</p>
           {q.insufficient_data && <p className="text-sm">Pas assez de réponses (minimum {d.min_group_size}) pour afficher le détail.</p>}
           {q.stats && <p className="mb-2 text-sm">Moyenne {q.stats.average} — min {q.stats.min} — max {q.stats.max}</p>}
+          {q.other_answers?.length > 0 && <div className="mb-3 rounded-lg border border-forest/15 p-3">
+            <h4 className="mb-2 text-sm font-semibold">Précisions apportées dans « Autre »</h4>
+            <ul className="space-y-2">{q.other_answers.map((item, index) => <li key={`${item.text}-${index}`} className="flex items-start justify-between gap-3 text-sm">
+              <span>{item.text}</span><span className="shrink-0 rounded-full bg-forest/10 px-2 py-0.5 text-xs font-medium">{item.count} réponse(s)</span>
+            </li>)}</ul>
+          </div>}
           {q.breakdown ? (
             <div style={{ height: 80 + q.distribution.length * 44 }}>
               <ResponsiveContainer width="100%" height="100%">

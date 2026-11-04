@@ -12,6 +12,17 @@ import { SaveAsTemplate } from './Templates';
 import CollectorAssignment from './StudyCollectors';
 
 const OTHER_PREFIX = '__dobi_other__:';
+/** Fait défiler jusqu'à un élément (réessaie un instant si l'écran se met encore à jour). */
+function scrollToId(domId, block = 'start', tries = 8) {
+  const el = document.getElementById(domId);
+  if (el) el.scrollIntoView({ behavior: 'smooth', block });
+  else if (tries > 0) setTimeout(() => scrollToId(domId, block, tries - 1), 150);
+}
+
+/** Types dont les réponses déjà reçues restent valables (même liste que côté serveur). */
+const COMPATIBLE = [['short_text', 'long_text'], ['integer', 'decimal', 'number'], ['single_choice', 'dropdown']];
+const sameFamily = (a, b) => a === b || COMPATIBLE.some((fam) => fam.includes(a) && fam.includes(b));
+
 const TYPES = {
   short_text: 'Réponse courte', long_text: 'Réponse longue', integer: 'Nombre entier', decimal: 'Nombre décimal', single_choice: 'Choix unique', dropdown: 'Liste déroulante', multiple_choice: 'Choix multiple',
   yes_no: 'Oui / Non', number: 'Nombre', date: 'Date', time: 'Heure', datetime: 'Date et heure', scale: 'Échelle de notation', location: 'Lieu / adresse', geolocation: 'Position GPS', note: 'Texte informatif',
@@ -168,6 +179,8 @@ function Builder({ study, questions, sections, onChange, readOnly }) {
     const sb = sections.find((x) => x.id === b.section_id)?.position ?? -1;
     return sa - sb || a.position - b.position || a.id - b.id;
   });
+  const editingQ = editing ? ordered.find((q) => q.id === editing) : null;
+  const typeLocked = !!editingQ?.has_answers;
   const currentQuestionIndex = editing ? ordered.findIndex((q) => q.id === editing) : ordered.length;
   const sources = ordered.slice(0, Math.max(0, currentQuestionIndex)).filter((q) => !['note', 'geolocation'].includes(q.type));
   const source = sources.find((q) => String(q.id) === String(f.source));
@@ -180,7 +193,7 @@ function Builder({ study, questions, sections, onChange, readOnly }) {
     mutationFn: () => editingSection
       ? api(`/sections/${editingSection}`, { method: 'PUT', body: sectionForm })
       : api(`/studies/${study.id}/sections`, { method: 'POST', body: sectionForm }),
-    onSuccess: (section) => { setSectionForm({ title: '', description: '' }); setEditingSection(null); setShowSectionForm(false); setActiveSection(section.id); ok(); },
+    onSuccess: (section) => { setSectionForm({ title: '', description: '' }); setEditingSection(null); setShowSectionForm(false); setActiveSection(section.id); ok(); setTimeout(() => scrollToId(`step-${section.id}`), 300); },
     onError: fail,
   });
   const save = useMutation({
@@ -205,7 +218,7 @@ function Builder({ study, questions, sections, onChange, readOnly }) {
       };
       return editing ? api(`/questions/${editing}`, { method: 'PUT', body }) : api(`/studies/${study.id}/questions`, { method: 'POST', body });
     },
-    onSuccess: () => { reset(); ok(); }, onError: fail,
+    onSuccess: (saved) => { reset(); ok(); setTimeout(() => scrollToId(`question-${saved.id}`, 'center'), 300); }, onError: fail,
   });
 
   const editQuestion = (q) => {
@@ -215,9 +228,9 @@ function Builder({ study, questions, sections, onChange, readOnly }) {
       options: q.options?.length ? q.options.map((o) => ({ ...o })) : [{ label: '', value: '' }, { label: '', value: '' }],
       source: q.rules?.[0]?.source_question_id ?? '', operator: q.rules?.[0]?.operator ?? 'equals', value: q.rules?.[0]?.value ?? '',
       min: q.settings?.min ?? '', max: q.settings?.max ?? '', min_length: q.settings?.min_length ?? '', max_length: q.settings?.max_length ?? '', format: q.settings?.format ?? '', allow_other: !!q.settings?.allow_other });
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    setTimeout(() => scrollToId('question-editor'), 50);
   };
-  const editStep = (section) => { setEditingSection(section.id); setSectionForm({ title: section.title, description: section.description || '' }); setShowSectionForm(true); };
+  const editStep = (section) => { setEditingSection(section.id); setSectionForm({ title: section.title, description: section.description || '' }); setShowSectionForm(true); setTimeout(() => scrollToId('step-editor'), 50); };
   const saveLayout = (nextSections, nextQuestions) => {
     const steps = nextSections.map((section) => ({ id: section.id, questions: nextQuestions.filter((q) => q.section_id === section.id).map((q) => q.id) }));
     const loose = nextQuestions.filter((q) => !q.section_id).map((q) => q.id);
@@ -244,7 +257,7 @@ function Builder({ study, questions, sections, onChange, readOnly }) {
       <div><h2 className="text-xl font-bold">Structure du formulaire</h2><p className="text-sm text-forest/70">Organisez votre enquête en étapes. Chaque étape peut contenir plusieurs questions.</p></div>
       {!readOnly && <button className="btn" onClick={() => { setEditingSection(null); setSectionForm({ title: '', description: '' }); setShowSectionForm(true); }}><FolderPlus size={16}/> Ajouter une étape</button>}
     </div>
-    {showSectionForm && !readOnly && <form className="panel space-y-3" onSubmit={(e) => { e.preventDefault(); saveSection.mutate(); }}>
+    {showSectionForm && !readOnly && <form id="step-editor" className="panel space-y-3" onSubmit={(e) => { e.preventDefault(); saveSection.mutate(); }}>
       <h3 className="font-bold">{editingSection ? 'Modifier l’étape' : 'Nouvelle étape'}</h3>
       <div><label className="label">Titre de l’étape</label><input className="input" required maxLength={200} placeholder="Ex. Identification du répondant" value={sectionForm.title} onChange={(e) => setSectionForm({ ...sectionForm, title: e.target.value })}/></div>
       <div><label className="label">Description (facultative)</label><textarea className="input" rows={2} maxLength={2000} placeholder="Expliquez brièvement ce que le participant doit renseigner…" value={sectionForm.description} onChange={(e) => setSectionForm({ ...sectionForm, description: e.target.value })}/></div>
@@ -255,7 +268,7 @@ function Builder({ study, questions, sections, onChange, readOnly }) {
       {[...sections].sort((a,b) => a.position-b.position).map((section, index) => {
         const qs = sectionQuestions(section.id);
         const stepSources = ordered.filter((q) => q.section_id !== section.id && !['note','geolocation'].includes(q.type) && (sections.find((s) => s.id === q.section_id)?.position ?? -1) < section.position);
-        return <section key={section.id} className={`overflow-hidden rounded-xl border ${activeSection === section.id ? 'border-forest ring-1 ring-forest/20' : 'border-forest/15'}`}>
+        return <section id={`step-${section.id}`} key={section.id} className={`overflow-hidden rounded-xl border ${activeSection === section.id ? 'border-forest ring-1 ring-forest/20' : 'border-forest/15'}`}>
           <div className="flex flex-wrap items-start justify-between gap-3 bg-forest/5 p-4">
             <button className="min-w-0 flex-1 text-left" onClick={() => setActiveSection(section.id)}><p className="text-xs font-bold uppercase tracking-wider text-forest/60">Étape {index + 1} · {qs.length} question(s)</p><h3 className="mt-1 text-lg font-bold">{section.title}</h3>{section.description && <p className="mt-1 text-sm text-forest/75">{section.description}</p>}</button>
             {!readOnly && <div className="flex items-center gap-1"><button className={iconBtn} title="Monter" disabled={index===0} onClick={() => moveSection(section,-1)}><ArrowUp size={16}/></button><button className={iconBtn} title="Descendre" disabled={index===sections.length-1} onClick={() => moveSection(section,1)}><ArrowDown size={16}/></button><button className={iconBtn} title="Modifier l’étape" onClick={() => editStep(section)}><Pencil size={16}/></button><button className={iconBtn} title="Supprimer l’étape" onClick={() => window.confirm('Supprimer cette étape ? Les questions seront conservées sans étape.') && simple.mutate({path:`/sections/${section.id}`,method:'DELETE'})}><Trash2 size={16}/></button></div>}
@@ -264,11 +277,11 @@ function Builder({ study, questions, sections, onChange, readOnly }) {
             {section.rules?.length > 0 && <p className="rounded-lg bg-amber-50 p-2 text-sm">Cette étape est conditionnelle : {section.rules.map((r) => { const src=ordered.find((q)=>q.id===r.source_question_id); return src ? `« ${src.label} » ${OPERATORS[r.operator] || r.operator} ${r.value}` : ''; }).filter(Boolean).join(' et ')}</p>}
             {(() => { const first = ordered.findIndex((x) => x.section_id === section.id); const bad = (section.rules || []).some((r) => { const i = ordered.findIndex((x) => x.id === r.source_question_id); return first !== -1 && (i === -1 || i >= first); }); return bad ? <p className="rounded-lg border border-terracotta/40 bg-terracotta/10 p-2 text-sm" role="alert"><strong>À corriger avant la publication :</strong> la condition de cette étape doit dépendre d’une question située dans une étape précédente (les participants répondent étape par étape). Modifiez la condition, ou déplacez l’étape après cette question.</p> : null; })()}
             {qs.length === 0 && <p className="rounded-lg border border-dashed border-forest/20 p-4 text-center text-sm text-forest/60">Aucune question dans cette étape.</p>}
-            {qs.map((q, qi) => <div key={q.id} className="panel flex items-start gap-3">
+            {qs.map((q, qi) => <div id={`question-${q.id}`} key={q.id} className="panel flex items-start gap-3">
               <span className="mt-0.5 text-sm font-bold text-forest/50">{qi+1}.</span><div className="min-w-0 flex-1"><p className="font-semibold">{q.label}{q.required && ' *'}</p><p className="text-sm text-forest/65">{TYPES[q.type] || q.type}{q.options?.length ? ` · ${q.options.map(o=>o.label).join(', ')}${q.settings?.allow_other ? ', Autre' : ''}` : ''}</p>{q.description && <p className="mt-1 text-sm">{q.description}</p>}{q.rules?.length>0 && <p className="mt-1 text-xs text-forest/65">Condition : {q.rules.map(r=>{const src=ordered.find(x=>x.id===r.source_question_id);return src?`« ${src.label} » ${OPERATORS[r.operator]||r.operator} ${r.value}`:''}).join(' et ')}</p>}</div>
               {!readOnly && <div className="flex shrink-0 gap-1"><button className={iconBtn} title="Modifier" onClick={()=>editQuestion(q)}><Pencil size={15}/></button><button className={iconBtn} title="Dupliquer" onClick={()=>simple.mutate({path:`/questions/${q.id}/duplicate`,method:'POST'})}><Copy size={15}/></button><button className={iconBtn} title="Supprimer" onClick={()=>window.confirm(study.responses_count > 0 ? 'Supprimer cette question ? Les réponses déjà reçues restent enregistrées, mais cette question n’apparaîtra plus dans les résultats après la prochaine publication.' : 'Supprimer cette question ?')&&simple.mutate({path:`/questions/${q.id}`,method:'DELETE'})}><Trash2 size={15}/></button></div>}
             </div>)}
-            {!readOnly && <div className="flex flex-wrap items-center gap-2"><button className="btn" onClick={()=>{reset();setActiveSection(section.id);}}><Plus size={16}/> Ajouter une question</button><label className="text-sm text-forest/70">Déplacer une question vers cette étape : <select className="input mt-1" value="" onChange={(e)=>{const q=ordered.find(x=>String(x.id)===e.target.value);if(q)moveQuestion(q,section.id);}}><option value="">Choisir une question…</option>{ordered.filter(q=>q.section_id!==section.id).map(q=><option key={q.id} value={q.id}>{q.label}</option>)}</select></label></div>}
+            {!readOnly && <div className="flex flex-wrap items-center gap-2"><button className="btn" onClick={()=>{reset();setActiveSection(section.id);setTimeout(() => scrollToId('question-editor'), 50);}}><Plus size={16}/> Ajouter une question</button><label className="text-sm text-forest/70">Déplacer une question vers cette étape : <select className="input mt-1" value="" onChange={(e)=>{const q=ordered.find(x=>String(x.id)===e.target.value);if(q)moveQuestion(q,section.id);}}><option value="">Choisir une question…</option>{ordered.filter(q=>q.section_id!==section.id).map(q=><option key={q.id} value={q.id}>{q.label}</option>)}</select></label></div>}
             {!readOnly && stepSources.length>0 && <SectionConditions section={section} sources={stepSources} onSave={(rules)=>simple.mutate({path:`/sections/${section.id}`,method:'PUT',body:{title:section.title,description:section.description,rules}})}/>}
           </div>
         </section>;
@@ -278,7 +291,7 @@ function Builder({ study, questions, sections, onChange, readOnly }) {
       <div className="flex items-center justify-between"><h2 className="text-lg font-bold">{editing?'Modifier la question':'Nouvelle question'}</h2>{editing&&<button className="btn-ghost" onClick={reset}><X size={16}/> Annuler</button>}</div>
       <form className="space-y-3" onSubmit={(e)=>{e.preventDefault();save.mutate();}}>
         <div><label className="label">Étape</label><select className="input" value={f.section_id} onChange={(e)=>setF({...f,section_id:e.target.value})}><option value="">Sans étape</option>{sections.map(s=><option key={s.id} value={s.id}>{s.title}</option>)}</select></div>
-        <div><label className="label">Type de question</label><select className="input" value={f.type} onChange={(e)=>setF({...f,type:e.target.value})}>{Object.entries({short_text:'Réponse courte',long_text:'Réponse longue',integer:'Nombre entier',decimal:'Nombre décimal',single_choice:'Choix unique',dropdown:'Liste déroulante',multiple_choice:'Choix multiple',yes_no:'Oui / Non',date:'Date',time:'Heure',datetime:'Date et heure',scale:'Échelle de notation',location:'Lieu / adresse',geolocation:'Position GPS',note:'Texte informatif'}).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select>{editing&&<p className="mt-1 text-xs text-forest/65">Une fois que la question a reçu des réponses, le type ne peut changer que vers un type compatible (texte court ou long, nombres, choix unique ou liste).</p>}</div>
+        <div><label className="label">Type de question</label><select className="input" value={f.type} onChange={(e)=>setF({...f,type:e.target.value})}>{Object.entries({short_text:'Réponse courte',long_text:'Réponse longue',integer:'Nombre entier',decimal:'Nombre décimal',single_choice:'Choix unique',dropdown:'Liste déroulante',multiple_choice:'Choix multiple',yes_no:'Oui / Non',date:'Date',time:'Heure',datetime:'Date et heure',scale:'Échelle de notation',location:'Lieu / adresse',geolocation:'Position GPS',note:'Texte informatif'}).map(([k,v])=><option key={k} value={k} disabled={typeLocked && !sameFamily(editingQ.type, k)}>{v}</option>)}</select>{typeLocked&&<p className="mt-1 text-xs text-forest/65">Cette question a déjà reçu des réponses : seuls les types compatibles sont proposés. Pour un autre type, ajoutez une nouvelle question.</p>}</div>
         <div><label className="label">Intitulé de la question ou consigne</label><input className="input" required maxLength={500} value={f.label} onChange={(e)=>setF({...f,label:e.target.value})} placeholder="Ex. Disposez-vous d'un accès à l'eau potable ?"/></div>
         <div><label className="label">Description ou aide (facultative)</label><textarea className="input" rows={2} maxLength={2000} value={f.description} onChange={(e)=>setF({...f,description:e.target.value})} placeholder="Précisez ce qui est attendu…"/></div>
         {choice && <fieldset className="space-y-2"><legend className="label">Options de réponse</legend>{f.options.map((o,i)=><div className="flex gap-2" key={i}><input className="input" required aria-label={`Option ${i+1}`} placeholder={`Option ${i+1}`} value={o.label} onChange={(e)=>setF({...f,options:f.options.map((x,j)=>j===i?{...x,label:e.target.value}:x)})}/><button type="button" className={iconBtn} aria-label="Supprimer l’option" onClick={()=>setF({...f,options:f.options.filter((_,j)=>j!==i)})}><X size={16}/></button></div>)}<button type="button" className="btn-ghost" onClick={()=>setF({...f,options:[...f.options,{label:'',value:''}]})}><Plus size={15}/> Ajouter une option</button>{['single_choice','multiple_choice'].includes(f.type)&&<label className="mt-2 flex items-start gap-2 text-sm"><input type="checkbox" checked={f.allow_other} onChange={(e)=>setF({...f,allow_other:e.target.checked})}/> <span><strong>Ajouter un choix « Autre »</strong><span className="block text-xs text-forest/65">Le participant pourra préciser sa propre réponse.</span></span></label>}</fieldset>}

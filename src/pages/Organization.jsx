@@ -13,9 +13,9 @@ export default function Organization() {
   const [invite, setInvite] = useState({ email: '', role: 'editor' });
 
   const org = useQuery({ queryKey: ['org', id], queryFn: () => api(`/organizations/${id}`) });
-  const members = useQuery({ queryKey: ['members', id], queryFn: () => api(`/organizations/${id}/members`) });
+  const members = useQuery({ queryKey: ['members', id], queryFn: () => api(`/organizations/${id}/members`), enabled: !!org.data && org.data.role !== 'surveyor' });
   const studies = useQuery({ queryKey: ['org-studies', id], queryFn: () => api(`/organizations/${id}/studies`) });
-  const invitations = useQuery({ queryKey: ['invitations', id], queryFn: () => api(`/organizations/${id}/invitations`) });
+  const invitations = useQuery({ queryKey: ['invitations', id], queryFn: () => api(`/organizations/${id}/invitations`), enabled: !!org.data && ['owner', 'admin'].includes(org.data.role) });
 
   useEffect(() => { if (org.data) setInfo({ name: org.data.name, description: org.data.description || '' }); }, [org.data]);
 

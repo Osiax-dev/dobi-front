@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { QRCodeSVG } from 'qrcode.react';
 import { ArrowDown, ArrowUp, Copy, FolderPlus, Pencil, Plus, Trash2, X } from 'lucide-react';
@@ -7,6 +7,9 @@ import { api, errText } from '../api';
 import Results from './Results';
 import { Question as PreviewQuestion, buildVisibleSteps, visibleQuestions } from './Public';
 import { STATUS } from '../ui';
+import { useWorkspace } from '../workspace';
+import { SaveAsTemplate } from './Templates';
+import CollectorAssignment from './StudyCollectors';
 
 const OTHER_PREFIX = '__dobi_other__:';
 const TYPES = {
@@ -29,16 +32,29 @@ const EVENTS = {
 export default function Study() {
   const { id } = useParams();
   const qc = useQueryClient();
-  const [tab, setTab] = useState('questions');
+  const [params] = useSearchParams();
+  const { orgs } = useWorkspace();
+  const [tab, setTab] = useState(['questions', 'preview', 'results', 'history'].includes(params.get('tab')) ? params.get('tab') : 'questions');
   const [error, setError] = useState('');
 
   const study = useQuery({ queryKey: ['study', id], queryFn: () => api(`/studies/${id}`) });
   const tree = useQuery({ queryKey: ['tree', id], queryFn: () => api(`/studies/${id}/questionnaire`) });
   const refresh = () => ['study', 'tree', 'history', 'analytics'].forEach((k) => qc.invalidateQueries({ queryKey: [k] }));
-  const run = (a) => { if (CONFIRM[a] && !window.confirm(CONFIRM[a])) return; act.mutate(a); };
+  const run = (a) => {
+    if (CONFIRM[a] && !window.confirm(CONFIRM[a])) return;
+    if (a === 'publish' && study.data?.status !== 'draft' && study.data?.responses_count > 0
+      && !window.confirm(`Cette étude a déjà ${study.data.responses_count} réponse(s). La nouvelle version remplacera celle que voient les participants. Les réponses déjà reçues restent enregistrées, mais les résultats suivront la nouvelle version. Continuer ?`)) return;
+    act.mutate(a);
+  };
 
   const act = useMutation({
     mutationFn: (a) => api(`/studies/${id}/${a}`, { method: 'POST' }),
+    onSuccess: () => { setError(''); refresh(); },
+    onError: (e) => setError(errText(e)),
+  });
+
+  const oneResponse = useMutation({
+    mutationFn: (value) => api(`/studies/${id}`, { method: 'PUT', body: { one_response_per_person: value } }),
     onSuccess: () => { setError(''); refresh(); },
     onError: (e) => setError(errText(e)),
   });
@@ -66,7 +82,30 @@ export default function Study() {
         </div>
       </div>
       {error && <p className="error mb-4">{error}</p>}
+      {!archived && s.status !== 'draft' && s.responses_count > 0 && (
+        <p className="panel mb-4 text-sm" role="note">
+          <strong>Cette étude a déjà {s.responses_count} réponse(s).</strong> Vos modifications restent invisibles pour les participants tant que vous n’avez pas cliqué sur « Publier une nouvelle version ». Les réponses déjà reçues restent enregistrées, mais les résultats suivent la dernière version publiée : une question supprimée n’y apparaît plus.
+        </p>
+      )}
       {archived && <p className="panel mb-4">Cette étude est archivée : elle est en lecture seule. Restaurez-la pour la modifier ; ses réponses et ses versions sont conservées.</p>}
+
+      {!archived && (
+        <label className="panel mb-4 flex items-start gap-3 text-sm">
+          <input type="checkbox" className="mt-1" checked={!!s.one_response_per_person} disabled={oneResponse.isPending} onChange={(e) => oneResponse.mutate(e.target.checked)} />
+          <span>
+            <strong>Une seule réponse par personne</strong>
+            <span className="block text-forest/70">
+              {s.privacy_mode === 'identified'
+                ? 'Une même adresse e-mail ne peut répondre qu’une fois à cette étude.'
+                : 'Étude anonyme : protection limitée. Un appareil ne peut répondre qu’une fois, mais une personne peut contourner avec un autre appareil.'}
+            </span>
+          </span>
+        </label>
+      )}
+
+      {!archived && ['owner', 'admin'].includes(orgs.find((o) => o.id === s.organization_id)?.role) && <CollectorAssignment study={s} />}
+
+      {!archived && ['owner', 'admin', 'editor'].includes(orgs.find((o) => o.id === s.organization_id)?.role) && <SaveAsTemplate study={s} />}
 
       {s.privacy_mode === 'identified' && <p className="mb-4"><Link to={`/studies/${s.id}/participants`} className="btn-ghost">Voir les participants</Link></p>}
 
@@ -88,7 +127,7 @@ export default function Study() {
 
       {tab === 'questions' && <Builder study={s} questions={questions} sections={tree.data?.sections || []} onChange={refresh} readOnly={archived} />}
       {tab === 'preview' && <Preview questions={questions} sections={tree.data?.sections || []} />}
-      {tab === 'results' && <Results study={s} orgName={s.organization_name} />}
+      {tab === 'results' && <Results study={s} orgName={orgs.find((o) => o.id === s.organization_id)?.name} />}
       {tab === 'history' && <History study={s} />}
     </div>
   );
@@ -226,7 +265,7 @@ function Builder({ study, questions, sections, onChange, readOnly }) {
             {qs.length === 0 && <p className="rounded-lg border border-dashed border-forest/20 p-4 text-center text-sm text-forest/60">Aucune question dans cette étape.</p>}
             {qs.map((q, qi) => <div key={q.id} className="panel flex items-start gap-3">
               <span className="mt-0.5 text-sm font-bold text-forest/50">{qi+1}.</span><div className="min-w-0 flex-1"><p className="font-semibold">{q.label}{q.required && ' *'}</p><p className="text-sm text-forest/65">{TYPES[q.type] || q.type}{q.options?.length ? ` · ${q.options.map(o=>o.label).join(', ')}${q.settings?.allow_other ? ', Autre' : ''}` : ''}</p>{q.description && <p className="mt-1 text-sm">{q.description}</p>}{q.rules?.length>0 && <p className="mt-1 text-xs text-forest/65">Condition : {q.rules.map(r=>{const src=ordered.find(x=>x.id===r.source_question_id);return src?`« ${src.label} » ${OPERATORS[r.operator]||r.operator} ${r.value}`:''}).join(' et ')}</p>}</div>
-              {!readOnly && <div className="flex shrink-0 gap-1"><button className={iconBtn} title="Modifier" onClick={()=>editQuestion(q)}><Pencil size={15}/></button><button className={iconBtn} title="Dupliquer" onClick={()=>simple.mutate({path:`/questions/${q.id}/duplicate`,method:'POST'})}><Copy size={15}/></button><button className={iconBtn} title="Supprimer" onClick={()=>window.confirm('Supprimer cette question ?')&&simple.mutate({path:`/questions/${q.id}`,method:'DELETE'})}><Trash2 size={15}/></button></div>}
+              {!readOnly && <div className="flex shrink-0 gap-1"><button className={iconBtn} title="Modifier" onClick={()=>editQuestion(q)}><Pencil size={15}/></button><button className={iconBtn} title="Dupliquer" onClick={()=>simple.mutate({path:`/questions/${q.id}/duplicate`,method:'POST'})}><Copy size={15}/></button><button className={iconBtn} title="Supprimer" onClick={()=>window.confirm(study.responses_count > 0 ? 'Supprimer cette question ? Les réponses déjà reçues restent enregistrées, mais cette question n’apparaîtra plus dans les résultats après la prochaine publication.' : 'Supprimer cette question ?')&&simple.mutate({path:`/questions/${q.id}`,method:'DELETE'})}><Trash2 size={15}/></button></div>}
             </div>)}
             {!readOnly && <div className="flex flex-wrap items-center gap-2"><button className="btn" onClick={()=>{reset();setActiveSection(section.id);}}><Plus size={16}/> Ajouter une question</button><label className="text-sm text-forest/70">Déplacer une question vers cette étape : <select className="input mt-1" value="" onChange={(e)=>{const q=ordered.find(x=>String(x.id)===e.target.value);if(q)moveQuestion(q,section.id);}}><option value="">Choisir une question…</option>{ordered.filter(q=>q.section_id!==section.id).map(q=><option key={q.id} value={q.id}>{q.label}</option>)}</select></label></div>}
             {!readOnly && stepSources.length>0 && <SectionConditions section={section} sources={stepSources} onSave={(rules)=>simple.mutate({path:`/sections/${section.id}`,method:'PUT',body:{title:section.title,description:section.description,rules}})}/>}

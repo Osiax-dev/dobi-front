@@ -1,30 +1,35 @@
 import { useState } from 'react';
 import { Link, Navigate, NavLink, Route, Routes } from 'react-router-dom';
-import { BarChart3, Building2, ChevronDown, FolderKanban, LayoutDashboard, LayoutTemplate, LogOut, Menu, Settings, Users, X } from 'lucide-react';
+import { BarChart3, Building2, ChevronDown, ClipboardList, FolderKanban, LayoutDashboard, LayoutTemplate, LogOut, Menu, Settings, Users, X } from 'lucide-react';
 import { useAuth } from './auth';
 import { Logo } from './ui';
 import { InstallButton, OfflineBanner, UpdateBanner, useQueueSync } from './pwa';
 import { WorkspaceProvider, useWorkspace } from './workspace';
-import { Forgot, Login, Register, Reset } from './pages/Auth';
+import { CheckEmail, EmailVerified, Forgot, Login, Register, Reset } from './pages/Auth';
 import Dashboard from './pages/Dashboard';
 import Studies from './pages/Studies';
 import Organizations from './pages/Organizations';
 import Organization from './pages/Organization';
 import Participation from './pages/Participation';
 import StudyParticipants from './pages/StudyParticipants';
+import ResultsHub from './pages/ResultsHub';
+import Collecte from './pages/Collecte';
+import SettingsPage from './pages/Settings';
+import Templates from './pages/Templates';
 import Study from './pages/Study';
 import Invitation from './pages/Invitation';
 import { PublicOrg, PublicStudy } from './pages/Public';
 
 // Modules sans écran pour l'instant : affichés « Bientôt », jamais cliquables.
 const NAV = [
-  { to: '/', label: 'Tableau de bord', icon: LayoutDashboard },
-  { to: '/studies', label: 'Mes études', icon: FolderKanban },
-  { to: '/organizations', label: 'Organisations', icon: Building2 },
-  { label: 'Résultats & Analyses', icon: BarChart3 },
-  { to: '/participants', label: 'Participants', icon: Users },
-  { label: 'Modèles', icon: LayoutTemplate },
-  { label: 'Paramètres', icon: Settings },
+  { to: '/', label: 'Tableau de bord', icon: LayoutDashboard, hideFor: ['surveyor'] },
+  { to: '/collecte', label: 'Collecte', icon: ClipboardList, onlyFor: ['owner', 'admin', 'editor', 'surveyor'] },
+  { to: '/studies', label: 'Mes études', icon: FolderKanban, hideFor: ['surveyor'] },
+  { to: '/organizations', label: 'Organisations', icon: Building2, hideFor: ['surveyor'] },
+  { to: '/results', label: 'Résultats & Analyses', icon: BarChart3, hideFor: ['surveyor'] },
+  { to: '/participants', label: 'Participants', icon: Users, hideFor: ['surveyor'] },
+  { to: '/modeles', label: 'Modèles', icon: LayoutTemplate, onlyFor: ['owner', 'admin', 'editor'] },
+  { to: '/parametres', label: 'Paramètres', icon: Settings },
 ];
 
 function Sidebar({ onNavigate }) {
@@ -34,7 +39,7 @@ function Sidebar({ onNavigate }) {
     <div className="flex h-full flex-col bg-deep p-4 text-white">
       <Link to="/" onClick={onNavigate} className="mb-8 mt-2 px-2"><Logo light tagline /></Link>
       <nav aria-label="Navigation principale" className="flex-1 space-y-1">
-        {NAV.map(({ to, label, icon: Icon }) =>
+        {NAV.filter((n) => !n.hideFor?.includes(active?.role) && (!n.onlyFor || n.onlyFor.includes(active?.role))).map(({ to, label, icon: Icon }) =>
           to ? (
             <NavLink key={label} to={to} end={to === '/'} onClick={onNavigate}
               className={({ isActive }) => `flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-semibold ${isActive ? 'bg-lime text-forest' : 'text-white/85 hover:bg-white/10'}`}>
@@ -92,6 +97,13 @@ export function Shell({ children }) {
   );
 }
 
+/** Accueil : l'enquêteur arrive directement sur la collecte. */
+function Home() {
+  const { active, loading } = useWorkspace();
+  if (loading) return <p>Chargement…</p>; // évite d'appeler le tableau de bord avant de connaître le rôle
+  return active?.role === 'surveyor' ? <Navigate to="/collecte" replace /> : <Dashboard />;
+}
+
 function Private({ children }) {
   const { user, loading } = useAuth();
   if (loading) return <p className="p-6">Chargement…</p>;
@@ -107,15 +119,21 @@ export default function App() {
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
+      <Route path="/verifier-email" element={<CheckEmail />} />
+      <Route path="/email-verifie" element={<EmailVerified />} />
       <Route path="/forgot-password" element={<Forgot />} />
       <Route path="/reset-password" element={<Reset />} />
       <Route path="/invitations/:token" element={<Invitation />} />
       <Route path="/s/:slug" element={<PublicStudy />} />
       <Route path="/o/:slug" element={<PublicOrg />} />
-      <Route path="/" element={<Private><Dashboard /></Private>} />
+      <Route path="/" element={<Private><Home /></Private>} />
+      <Route path="/collecte" element={<Private><Collecte /></Private>} />
+      <Route path="/parametres" element={<Private><SettingsPage /></Private>} />
+      <Route path="/modeles" element={<Private><Templates /></Private>} />
       <Route path="/studies" element={<Private><Studies /></Private>} />
       <Route path="/organizations" element={<Private><Organizations /></Private>} />
       <Route path="/organizations/:id" element={<Private><Organization /></Private>} />
+      <Route path="/results" element={<Private><ResultsHub /></Private>} />
       <Route path="/participants" element={<Private><Participation /></Private>} />
       <Route path="/studies/:id/participants" element={<Private><StudyParticipants /></Private>} />
       <Route path="/studies/:id" element={<Private><Study /></Private>} />

@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom';
+import { Link, Navigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { ArrowRight, ShieldCheck, UserCheck } from 'lucide-react';
 import { api, errText } from '../api';
@@ -9,7 +9,8 @@ const fmt = (x) => (x ? new Date(x).toLocaleDateString('fr-FR', { day: 'numeric'
 
 export default function Participation() {
   const { active, loading } = useWorkspace();
-  const q = useQuery({ queryKey: ['participation', active?.id], queryFn: () => api(`/organizations/${active.id}/participation`), enabled: !!active });
+  const q = useQuery({ queryKey: ['participation', active?.id], queryFn: () => api(`/organizations/${active.id}/participation`), enabled: !!active && active.role !== 'surveyor' });
+  if (active?.role === 'surveyor') return <Navigate to="/collecte" replace />;
   if (loading || q.isLoading) return <p>Chargement…</p>;
   if (q.isError) return <p className="error">{errText(q.error)}</p>;
   const { totals, studies } = q.data;

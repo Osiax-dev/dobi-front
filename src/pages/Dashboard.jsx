@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom';
+import { Link, Navigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { Area, AreaChart, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { ArrowRight, Building2, CheckCircle2, FileText, Users } from 'lucide-react';
@@ -55,8 +55,9 @@ function Kpi({ icon: Icon, label, value, trend }) {
 export default function Dashboard() {
   const { user } = useAuth();
   const { active, orgs, loading } = useWorkspace();
-  const q = useQuery({ queryKey: ['dashboard', active?.id], queryFn: () => api(`/organizations/${active.id}/dashboard`), enabled: !!active });
+  const q = useQuery({ queryKey: ['dashboard', active?.id], queryFn: () => api(`/organizations/${active.id}/dashboard`), enabled: !!active && active.role !== 'surveyor' });
 
+  if (active?.role === 'surveyor') return <Navigate to="/collecte" replace />;
   if (loading || q.isLoading) return <p>Chargement…</p>;
   if (q.isError) return <p className="error">{errText(q.error)}</p>;
   const d = q.data;

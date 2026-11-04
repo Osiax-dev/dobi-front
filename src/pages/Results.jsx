@@ -19,9 +19,9 @@ export default function Results({ study, orgName }) {
   const doExport = (format) => { setMsg(''); downloadExport(study.id, format, exportParams).catch((e) => setMsg(e.message)); };
 
   if (res.isLoading) return <p>Chargement…</p>;
-  if (res.isError) return <p className="error">{errText(res.error)}</p>;
+  if (res.isError) return <p className="error">{res.error.status === 403 ? 'Les résultats sont réservés aux propriétaires, administrateurs et analystes de l’espace.' : errText(res.error)}</p>;
   const d = res.data;
-  const choiceQuestions = d.questions.filter((q) => ['single_choice', 'yes_no'].includes(q.type));
+  const choiceQuestions = d.questions.filter((q) => ['single_choice', 'dropdown', 'yes_no'].includes(q.type));
   const set = (k, v) => setF({ ...f, [k]: v });
 
   return (
@@ -120,6 +120,32 @@ export default function Results({ study, orgName }) {
           )}
         </section>
       ))}
+      <Collectors studyId={study.id} />
     </div>
+  );
+}
+
+/** Suivi par enquêteur : affiché seulement si au moins une réponse a été collectée par un enquêteur. */
+function Collectors({ studyId }) {
+  const res = useQuery({ queryKey: ['collectors', studyId], queryFn: () => api(`/studies/${studyId}/collectors`) });
+  const rows = res.data?.data || [];
+  if (!rows.length) return null;
+  return (
+    <section className="panel">
+      <h3 className="mb-3 font-semibold">Suivi par enquêteur</h3>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead><tr className="border-b border-forest/10 text-left"><th className="py-2 pr-3 font-semibold">Enquêteur</th><th className="py-2 pr-3 font-semibold">Réponses</th><th className="py-2 font-semibold">Dernière collecte</th></tr></thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.user_id} className="border-b border-forest/5">
+                <td className="py-2 pr-3">{r.name}</td><td className="py-2 pr-3">{r.total}</td><td className="py-2">{fmt(r.last_at)}</td>
+              </tr>
+            ))}
+            {res.data.public_link > 0 && <tr><td className="py-2 pr-3 text-forest/70">Lien public</td><td className="py-2 pr-3">{res.data.public_link}</td><td className="py-2">—</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }

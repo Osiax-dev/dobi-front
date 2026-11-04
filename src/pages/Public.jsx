@@ -1,9 +1,9 @@
 import { useMemo, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { QRCodeSVG } from 'qrcode.react';
 import { CalendarClock, CheckCircle2, Clock, ListChecks, ShieldCheck, UserCheck } from 'lucide-react';
-import { api } from '../api';
+import { api, getToken } from '../api';
 import { Logo } from '../ui';
 import { enqueue } from '../offline';
 import { OfflineBanner, PendingBanner } from '../pwa';
@@ -166,6 +166,7 @@ function Chip({ icon: Icon, children }) {
 
 export function PublicStudy() {
   const { slug } = useParams();
+  const [urlParams] = useSearchParams(); // hook : doit rester avant tout return conditionnel
   const data = useQuery({ queryKey: ['public', slug], queryFn: () => api(`/public/studies/${slug}`, { auth: false }) });
   const [phase, setPhase] = useState('intro');
   const [answers, setAnswers] = useState({});
@@ -196,6 +197,11 @@ export function PublicStudy() {
   const { study, privacy_notice: notice } = data.data;
   const org = study.organization;
   const identified = study.privacy_mode === 'identified';
+  // Mode collecte : un enquêteur connecté saisit la réponse d'une autre personne (jamais bloqué par appareil).
+  const collecting = urlParams.get('collecte') === '1' && !!getToken();
+  const doneKey = `dobi_done_${slug}`;
+  const markDone = () => { try { if (study.one_response_per_person && !identified && !collecting) localStorage.setItem(doneKey, '1'); } catch { /* stockage indisponible */ } };
+  const alreadyDone = () => { try { return !!study.one_response_per_person && !identified && !collecting && localStorage.getItem(doneKey) === '1'; } catch { return false; } };
   const minutes = Math.max(1, Math.round(questions.length / 2));
   const currentIndex = Math.min(step, Math.max(steps.length-1,0));
   const currentStep = steps[currentIndex];
@@ -208,13 +214,16 @@ export function PublicStudy() {
     const clean = {};
     allVisible.forEach((q) => { if (!isEmpty(answers[q.id])) clean[q.id] = answers[q.id]; });
     const body = { answers: clean, website: trap, client_token: token, version: data.data.version, ...(identified ? { participant: who, consent } : {}) };
-    const saveOffline = async () => { await enqueue({ id: token, slug, title: study.title, body }); setPhase('queued'); window.scrollTo({ top: 0 }); };
+    const saveOffline = async () => { await enqueue({ id: token, slug, title: study.title, body, collect: collecting }); markDone(); setPhase('queued'); window.scrollTo({ top: 0 }); };
     if (!navigator.onLine) { await saveOffline(); setBusy(false); return; }
     try {
-      const res = await api(`/public/studies/${slug}/responses`, { method: 'POST', auth: false, body });
-      setReceipt(res.receipt || ''); setPhase('done'); window.scrollTo({ top: 0 });
+      const res = collecting
+        ? await api(`/collect/studies/${slug}/responses`, { method: 'POST', body })
+        : await api(`/public/studies/${slug}/responses`, { method: 'POST', auth: false, body });
+      setReceipt(res.receipt || ''); markDone(); setPhase('done'); window.scrollTo({ top: 0 });
     } catch (e) {
       if (!e.status) { await saveOffline(); setBusy(false); return; }
+      if (e.status === 409) { setMessage(e.message); return; }
       const map = {};
       Object.entries(e.errors || {}).forEach(([k, v]) => { map[k.replace('answers.', '')] = v; });
       setErrors(map);
@@ -230,8 +239,9 @@ export function PublicStudy() {
   };
   const previous = () => { setStep(Math.max(0,currentIndex-1)); window.scrollTo({top:0,behavior:'smooth'}); };
 
+  if (phase === 'intro' && alreadyDone()) return <PublicShell orgName={org.name} orgSlug={org.slug}><div className="panel text-center"><CheckCircle2 size={44} strokeWidth={1.5} className="mx-auto text-success"/><h1 className="mt-3 text-2xl font-bold">Vous avez déjà répondu</h1><p className="mt-2">Une seule réponse par personne est acceptée pour « {study.title} ». Merci pour votre participation.</p></div></PublicShell>;
   if (phase === 'queued') return <PublicShell orgName={org.name} orgSlug={org.slug}><div className="panel text-center"><CloudOff size={44} strokeWidth={1.5} className="mx-auto text-forest"/><h1 className="mt-3 text-2xl font-bold">Réponse enregistrée sur cet appareil</h1><p className="mt-2">Elle sera envoyée automatiquement dès que la connexion reviendra. Gardez ce navigateur sur cet appareil.</p></div></PublicShell>;
-  if (phase === 'done') return <PublicShell orgName={org.name} orgSlug={org.slug}><div className="panel text-center"><CheckCircle2 size={44} strokeWidth={1.5} className="mx-auto text-success"/><h1 className="mt-3 text-3xl font-bold">Merci !</h1><p className="mt-2">Votre réponse à « {study.title} » a bien été enregistrée.</p>{receipt&&<p className="mt-4 text-sm text-forest/70">Numéro de réception<br/><code className="break-all font-semibold text-forest">{receipt}</code></p>}<Link to={`/o/${org.slug}`} className="btn mt-6">Voir les autres études de {org.name}</Link></div></PublicShell>;
+  if (phase === 'done') return <PublicShell orgName={org.name} orgSlug={org.slug}><div className="panel text-center"><CheckCircle2 size={44} strokeWidth={1.5} className="mx-auto text-success"/><h1 className="mt-3 text-3xl font-bold">Merci !</h1><p className="mt-2">Votre réponse à « {study.title} » a bien été enregistrée.</p>{receipt&&<p className="mt-4 text-sm text-forest/70">Numéro de réception<br/><code className="break-all font-semibold text-forest">{receipt}</code></p>}{collecting ? <div className="mt-6 flex flex-wrap justify-center gap-2"><button className="btn" onClick={() => window.location.reload()}>Collecter une autre réponse</button><Link to="/collecte" className="btn-ghost">Retour à la collecte</Link></div> : <Link to={`/o/${org.slug}`} className="btn mt-6">Voir les autres études de {org.name}</Link>}</div></PublicShell>;
   if (phase === 'intro') return <PublicShell orgName={org.name} orgSlug={org.slug}><section className="rounded-2xl bg-deep p-6 text-white sm:p-8"><p className="text-sm text-white/70">{org.name}{study.category?` — ${study.category}`:''}</p><h1 className="mt-1 text-3xl font-bold sm:text-4xl">{study.title}</h1>{study.description&&<p className="mt-3 text-white/85">{study.description}</p>}<div className="mt-5 flex flex-wrap gap-2"><Chip icon={Clock}>Environ {minutes} min</Chip><Chip icon={ListChecks}>{questions.length} question{questions.length>1?'s':''}</Chip><Chip icon={identified?UserCheck:ShieldCheck}>{identified?'Réponses identifiées':'Réponses anonymes'}</Chip>{study.ends_at&&<Chip icon={CalendarClock}>Jusqu’au {new Date(study.ends_at).toLocaleDateString('fr-FR',{day:'numeric',month:'long'})}</Chip>}</div></section>{study.objective&&<div className="panel mt-4"><h2 className="font-bold">Objectif de l’étude</h2><p className="mt-1">{study.objective}</p></div>}{(study.target_population||study.geographic_zone)&&<p className="mt-4 text-sm">{study.target_population&&<>Public concerné : <strong>{study.target_population}</strong>. </>}{study.geographic_zone&&<>Zone : <strong>{study.geographic_zone}</strong>.</>}</p>}<div className="panel mt-4"><h2 className="font-bold">Vos données</h2><p className="mt-1 text-sm">{notice.text}</p></div><div className="mt-6 flex flex-wrap items-center justify-between gap-4"><button className="btn px-6 py-3 text-base" onClick={()=>setPhase('form')}>Commencer l’enquête</button><div className="flex items-center gap-3 text-xs text-forest/70"><QRCodeSVG value={window.location.href} size={64}/>Scannez pour ouvrir<br/>sur un autre appareil</div></div></PublicShell>;
 
   const IdentityBlock = identified && currentIndex === steps.length-1 && <div className="panel mt-4"><p className="mb-2 font-semibold">Vos informations</p>{[['full_name','Nom complet','text'],['email','Adresse e-mail','email'],['phone','Téléphone (facultatif)','tel']].map(([k,l,t])=><div key={k} className="mb-2"><input className="input" type={t} aria-label={l} placeholder={l} value={who[k]} onChange={(e)=>setWho({...who,[k]:e.target.value})}/>{errors[`participant.${k}`]&&<p className="mt-1 text-sm text-alert">{errors[`participant.${k}`].join(' ')}</p>}</div>)}<label className="flex items-start gap-2 text-sm"><input type="checkbox" className="mt-1" checked={consent} onChange={(e)=>setConsent(e.target.checked)}/>J’ai lu l’information sur mes données et j’accepte leur traitement.</label>{errors.consent&&<p className="mt-1 text-sm text-alert">{errors.consent.join(' ')}</p>}</div>;

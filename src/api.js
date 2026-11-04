@@ -16,9 +16,10 @@ export async function api(path, { method = 'GET', body, auth = true } = {}) {
   });
   const data = await res.json().catch(() => null);
   if (!res.ok) {
-    if (res.status === 401 && auth) setToken(null);
+    if (auth && (res.status === 401 || (res.status === 403 && data?.code === 'email_not_verified'))) setToken(null);
     const err = new Error(data?.message || 'Une erreur est survenue.');
     err.status = res.status;
+    err.code = data?.code || null;
     err.errors = data?.errors || null;
     throw err;
   }
@@ -26,9 +27,24 @@ export async function api(path, { method = 'GET', body, auth = true } = {}) {
 }
 
 /** Texte lisible d'une erreur API (messages de validation inclus). */
+const FR = [
+  [/email has already been taken/i, 'Cette adresse e-mail est déjà utilisée.'],
+  [/(\w[\w ]*) field is required/i, 'Un champ obligatoire est vide.'],
+  [/must be a valid email/i, 'Adresse e-mail invalide.'],
+  [/password field must be at least (\d+)/i, 'Le mot de passe doit contenir au moins $1 caractères.'],
+  [/password field confirmation does not match/i, 'Les deux mots de passe ne sont pas identiques.'],
+  [/password field must contain at least one letter/i, 'Le mot de passe doit contenir au moins une lettre.'],
+  [/password field must contain at least one number/i, 'Le mot de passe doit contenir au moins un chiffre.'],
+  [/must be at least (\d+) characters/i, 'Trop court (minimum $1 caractères).'],
+  [/may not be greater than (\d+) characters|must not be greater than (\d+) characters/i, 'Trop long.'],
+  [/selected .* is invalid/i, 'Valeur invalide.'],
+  [/too many attempts|too many requests/i, 'Trop de tentatives. Réessayez dans un instant.'],
+];
+/** Traduit les messages de validation anglais de Laravel les plus courants. */
+const fr = (m) => { for (const [re, out] of FR) { const x = String(m).match(re); if (x) return out.replace('$1', x[1] || ''); } return m; };
 export function errText(e) {
-  if (e?.errors) return Object.values(e.errors).flat().join(' ');
-  return e?.message || 'Une erreur est survenue.';
+  if (e?.errors) return Object.values(e.errors).flat().map(fr).join(' ');
+  return fr(e?.message || 'Une erreur est survenue.');
 }
 
 export async function downloadCsv(studyId) {

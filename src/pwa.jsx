@@ -4,7 +4,9 @@ import { Download, WifiOff } from 'lucide-react';
 import { api } from './api';
 import { flush, listQueue, remove } from './offline';
 
-export const sendQueued = (it) => api(`/public/studies/${it.slug}/responses`, { method: 'POST', auth: false, body: it.body });
+export const sendQueued = (it) => (it.collect
+  ? api(`/collect/studies/${it.slug}/responses`, { method: 'POST', body: it.body })
+  : api(`/public/studies/${it.slug}/responses`, { method: 'POST', auth: false, body: it.body }));
 
 export function useOnline() {
   const [online, setOnline] = useState(typeof navigator === 'undefined' ? true : navigator.onLine);

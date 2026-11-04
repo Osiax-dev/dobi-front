@@ -1,0 +1,15 @@
+DOBI - PATCH RESULTATS & ANALYSES (v2, sans ecrasement)
+
+Cette version est reconstruite a partir de TES fichiers :
+dobi-front-code + patch etapes (correctif) + patch "Choix Autre".
+Seules mes petites modifications ont ete ajoutees dessus.
+
+FICHIERS (a copier avec les memes chemins) :
+  src/App.jsx                  -> menu "Resultats & Analyses" cliquable + route /results
+  src/pages/ResultsHub.jsx     -> NOUVEAU : vue d'ensemble des resultats
+  src/pages/Study.jsx          -> TON Study.jsx (etapes + Autre) + ouverture directe de l'onglet Resultats (?tab=results)
+  src/pages/Results.jsx        -> TON Results.jsx (Autre) + liste deroulante "dropdown" + message 403 clair
+
+NE PAS TOUCHER : src/pages/Public.jsx (reste le tien, je ne l'ai pas modifie).
+
+Verification : npm run build -> OK.

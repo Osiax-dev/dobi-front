@@ -1,3 +1,5 @@
+import { useState } from 'react';
+import { Eye, EyeOff } from 'lucide-react';
 // Composants d'identité DOBI : logo et badges de statut.
 const STATUS_STYLES = {
   draft: ['Brouillon', 'bg-slate/20 text-forest'],
@@ -6,6 +8,19 @@ const STATUS_STYLES = {
   closed: ['Clôturée', 'bg-forest text-white'],
   archived: ['Archivée', 'bg-forest/10 text-forest/70'],
 };
+
+export function PasswordInput({ className = 'input', ...props }) {
+  const [show, setShow] = useState(false);
+  return (
+    <div className="relative">
+      <input {...props} type={show ? 'text' : 'password'} className={`${className} pr-11`} />
+      <button type="button" onClick={() => setShow((s) => !s)} aria-label={show ? 'Masquer le mot de passe' : 'Afficher le mot de passe'} aria-pressed={show}
+        className="absolute right-1 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-md text-forest/70 hover:text-forest">
+        {show ? <EyeOff size={18} aria-hidden="true" /> : <Eye size={18} aria-hidden="true" />}
+      </button>
+    </div>
+  );
+}
 
 export function StatusBadge({ status }) {
   const [label, cls] = STATUS_STYLES[status] || [status, 'bg-slate/20'];

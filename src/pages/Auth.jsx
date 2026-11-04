@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { MailCheck, MailWarning } from 'lucide-react';
 import { api, errText } from '../api';
 import { useAuth } from '../auth';
-import { Logo } from '../ui';
+import { Logo, PasswordInput } from '../ui';
 
 function Frame({ title, children, footer }) {
   return (
@@ -21,7 +22,7 @@ function Field({ label, ...props }) {
   return (
     <div className="mb-3">
       <label className="label">{label}</label>
-      <input className="input" {...props} />
+      {props.type === 'password' ? <PasswordInput {...props} /> : <input className="input" {...props} />}
     </div>
   );
 }
@@ -40,10 +41,74 @@ function useForm(initial, action) {
   return { bind, submit, error, busy };
 }
 
+function ResendButton({ email }) {
+  const [state, setState] = useState({ busy: false, msg: '', error: '' });
+  const resend = async () => {
+    setState({ busy: true, msg: '', error: '' });
+    try {
+      const d = await api('/auth/email/resend', { method: 'POST', auth: false, body: { email } });
+      setState({ busy: false, msg: d.message, error: '' });
+    } catch (err) {
+      setState({ busy: false, msg: '', error: err.status === 429 ? 'Trop de demandes. Patientez une minute avant de réessayer.' : errText(err) });
+    }
+  };
+  return (
+    <div className="mt-3">
+      <button type="button" className="btn-ghost" onClick={resend} disabled={state.busy}>Renvoyer l’e-mail de confirmation</button>
+      {state.msg && <p className="mt-2 text-sm" role="status">{state.msg}</p>}
+      {state.error && <p className="error mt-2">{state.error}</p>}
+    </div>
+  );
+}
+
+export function CheckEmail() {
+  const [params] = useSearchParams();
+  const email = params.get('email') || '';
+  return (
+    <Frame title="Vérifiez votre boîte e-mail" footer={<Link className="underline" to="/login">Retour à la connexion</Link>}>
+      <MailCheck className="mb-3 text-leaf" size={32} aria-hidden="true" />
+      <p>Nous avons envoyé un lien de confirmation à <strong>{email || 'votre adresse e-mail'}</strong>. Cliquez dessus pour activer votre compte, puis connectez-vous.</p>
+      <p className="mt-2 text-sm text-forest/70">Le lien est valable 24 heures. Pensez à regarder dans les courriers indésirables.</p>
+      {email && <ResendButton email={email} />}
+    </Frame>
+  );
+}
+
+export function EmailVerified() {
+  const [params] = useSearchParams();
+  const status = params.get('status');
+  const changed = status === 'changed';
+  const ok = status === 'ok' || changed;
+  return (
+    <Frame title={changed ? 'Adresse e-mail modifiée' : ok ? 'Adresse e-mail confirmée' : status === 'taken' ? 'Adresse déjà utilisée' : 'Lien non valide'} footer={<Link className="underline" to="/login">Aller à la connexion</Link>}>
+      {ok ? (
+        <>
+          <MailCheck className="mb-3 text-leaf" size={32} aria-hidden="true" />
+          <p>{changed ? 'Votre nouvelle adresse e-mail est confirmée. Connectez-vous avec cette adresse.' : 'Votre compte est activé. Vous pouvez maintenant vous connecter.'}</p>
+          <Link className="btn mt-4 w-full text-center" to="/login">Se connecter</Link>
+        </>
+      ) : (
+        <>
+          <MailWarning className="mb-3 text-forest" size={32} aria-hidden="true" />
+          <p>{status === 'taken' ? 'Cette adresse est déjà utilisée par un autre compte. Votre adresse actuelle reste inchangée.' : status === 'expired' ? 'Ce lien a expiré.' : 'Ce lien est invalide ou a déjà été utilisé.'} Pour un lien d’inscription, essayez de vous connecter : un bouton vous permettra de demander un nouveau lien. Pour un changement d’adresse, recommencez depuis Paramètres.</p>
+          <Link className="btn mt-4 w-full text-center" to="/login">Aller à la connexion</Link>
+        </>
+      )}
+    </Frame>
+  );
+}
+
 export function Login() {
   const { login } = useAuth();
   const nav = useNavigate();
-  const f = useForm({ email: '', password: '' }, async (v) => { await login(v.email, v.password); nav('/'); });
+  const [unverified, setUnverified] = useState('');
+  const f = useForm({ email: '', password: '' }, async (v) => {
+    setUnverified('');
+    try { await login(v.email, v.password); nav('/'); } catch (err) {
+      if (err.status === 403 && err.code === 'email_not_verified') setUnverified(v.email);
+      throw err;
+    }
+  });
   return (
     <Frame title="Connexion" footer={<>Pas de compte ? <Link className="font-semibold text-leaf underline" to="/register">Créer un compte</Link></>}>
       <form onSubmit={f.submit}>
@@ -51,6 +116,7 @@ export function Login() {
         <Field label="Adresse e-mail" type="email" required autoComplete="email" {...f.bind('email')} />
         <Field label="Mot de passe" type="password" required autoComplete="current-password" {...f.bind('password')} />
         <button className="btn w-full" disabled={f.busy}>Se connecter</button>
+        {unverified && <ResendButton email={unverified} />}
         <p className="mt-3 text-sm"><Link className="underline" to="/forgot-password">Mot de passe oublié ?</Link></p>
       </form>
     </Frame>
@@ -60,7 +126,7 @@ export function Login() {
 export function Register() {
   const { register } = useAuth();
   const nav = useNavigate();
-  const f = useForm({ name: '', email: '', password: '', password_confirmation: '' }, async (v) => { await register(v); nav('/'); });
+  const f = useForm({ name: '', email: '', password: '', password_confirmation: '' }, async (v) => { const d = await register(v); nav(`/verifier-email?email=${encodeURIComponent(d.email || v.email)}`); });
   return (
     <Frame title="Créer un compte" footer={<>Déjà inscrit ? <Link className="font-semibold text-leaf underline" to="/login">Se connecter</Link></>}>
       <form onSubmit={f.submit}>

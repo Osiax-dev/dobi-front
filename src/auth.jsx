@@ -19,9 +19,8 @@ export function AuthProvider({ children }) {
     setUser(d.user);
   };
   const register = async (body) => {
-    const d = await api('/auth/register', { method: 'POST', auth: false, body });
-    setToken(d.token);
-    setUser(d.user);
+    // Pas de token avant la confirmation de l'adresse e-mail.
+    return api('/auth/register', { method: 'POST', auth: false, body });
   };
   const logout = async () => {
     try { await api('/auth/logout', { method: 'POST' }); } catch { /* token déjà invalide */ }
@@ -29,5 +28,5 @@ export function AuthProvider({ children }) {
     setUser(null);
   };
 
-  return <Ctx.Provider value={{ user, loading, login, register, logout }}>{children}</Ctx.Provider>;
+  return <Ctx.Provider value={{ user, setUser, loading, login, register, logout }}>{children}</Ctx.Provider>;
 }

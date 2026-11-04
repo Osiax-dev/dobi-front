@@ -7,7 +7,7 @@ import { useWorkspace } from '../workspace';
 
 export default function Studies() {
   const nav = useNavigate();
-  const [form, setForm] = useState({ title: '', privacy_mode: 'anonymous', collection_mode: 'classic' });
+  const [form, setForm] = useState({ title: '', privacy_mode: 'anonymous', collection_mode: 'classic', one_response_per_person: false });
   const [error, setError] = useState('');
   const [view, setView] = useState('active');
 
@@ -58,6 +58,7 @@ export default function Studies() {
             <option value="anonymous">Anonymes</option>
             <option value="identified">Identifiés (nom + e-mail)</option>
           </select>
+          <label className="mb-3 flex items-center gap-2 text-sm"><input type="checkbox" checked={form.one_response_per_person} onChange={(e) => setForm({ ...form, one_response_per_person: e.target.checked })} /> Une seule réponse par personne</label>
           <label className="label">Mode de réponse</label>
           <select className="input mb-4" value={form.collection_mode} onChange={(e) => setForm({ ...form, collection_mode: e.target.value })}>
             <option value="classic">Formulaire classique</option>

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { QRCodeSVG } from 'qrcode.react';
-import { ArrowDown, ArrowUp, Copy, FolderPlus, Pencil, Plus, Trash2, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, Copy, FolderPlus, GripVertical, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { api, errText } from '../api';
 import Results from './Results';
 import { Question as PreviewQuestion, buildVisibleSteps, visibleQuestions } from './Public';
@@ -241,6 +241,24 @@ function Builder({ study, questions, sections, onChange, readOnly }) {
     const nextQuestions = ordered.map((q) => q.id === question.id ? { ...q, section_id: targetSectionId } : q);
     saveLayout(sections, nextQuestions);
   };
+  // Place une question dans une étape, avant `beforeId` (ou à la fin de l’étape si null).
+  const placeQuestion = (questionId, targetSectionId, beforeId = null) => {
+    const moving = ordered.find((q) => q.id === questionId);
+    if (!moving || questionId === beforeId) return;
+    const rest = ordered.filter((q) => q.id !== questionId);
+    let at = beforeId ? rest.findIndex((q) => q.id === beforeId) : -1;
+    if (at === -1) { const last = rest.map((q) => q.section_id).lastIndexOf(targetSectionId); at = last === -1 ? rest.length : last + 1; }
+    rest.splice(at, 0, { ...moving, section_id: targetSectionId });
+    saveLayout(sections, rest);
+  };
+  const shiftQuestion = (q, list, qi, direction) => {
+    if (direction < 0) return placeQuestion(q.id, q.section_id, list[qi - 1]?.id);
+    const after = list[qi + 2];
+    placeQuestion(q.id, q.section_id, after ? after.id : null);
+  };
+  const [dragId, setDragId] = useState(null);
+  const [overId, setOverId] = useState(null);
+  const endDrag = () => { setDragId(null); setOverId(null); };
   const moveSection = (section, direction) => {
     const sorted = [...sections].sort((a, b) => a.position - b.position);
     const index = sorted.findIndex((s) => s.id === section.id), target = index + direction;
@@ -276,11 +294,14 @@ function Builder({ study, questions, sections, onChange, readOnly }) {
           <div className="space-y-3 p-4">
             {section.rules?.length > 0 && <p className="rounded-lg bg-amber-50 p-2 text-sm">Cette étape est conditionnelle : {section.rules.map((r) => { const src=ordered.find((q)=>q.id===r.source_question_id); return src ? `« ${src.label} » ${OPERATORS[r.operator] || r.operator} ${r.value}` : ''; }).filter(Boolean).join(' et ')}</p>}
             {(() => { const first = ordered.findIndex((x) => x.section_id === section.id); const bad = (section.rules || []).some((r) => { const i = ordered.findIndex((x) => x.id === r.source_question_id); return first !== -1 && (i === -1 || i >= first); }); return bad ? <p className="rounded-lg border border-terracotta/40 bg-terracotta/10 p-2 text-sm" role="alert"><strong>À corriger avant la publication :</strong> la condition de cette étape doit dépendre d’une question située dans une étape précédente (les participants répondent étape par étape). Modifiez la condition, ou déplacez l’étape après cette question.</p> : null; })()}
-            {qs.length === 0 && <p className="rounded-lg border border-dashed border-forest/20 p-4 text-center text-sm text-forest/60">Aucune question dans cette étape.</p>}
-            {qs.map((q, qi) => <div id={`question-${q.id}`} key={q.id} className="panel flex items-start gap-3">
+            <div className="space-y-3" onDragOver={(e) => { if (dragId) e.preventDefault(); }} onDrop={(e) => { if (!dragId) return; e.preventDefault(); placeQuestion(dragId, section.id, null); endDrag(); }}>
+            {qs.length === 0 && <p className="rounded-lg border border-dashed border-forest/20 p-4 text-center text-sm text-forest/60">{dragId ? 'Déposez la question ici.' : 'Aucune question dans cette étape.'}</p>}
+            {qs.map((q, qi) => <div id={`question-${q.id}`} key={q.id} draggable={!readOnly} onDragStart={(e) => { setDragId(q.id); e.dataTransfer.effectAllowed = 'move'; try { e.dataTransfer.setData('text/plain', String(q.id)); } catch { /* ignore */ } }} onDragEnd={endDrag} onDragOver={(e) => { if (dragId && dragId !== q.id) { e.preventDefault(); setOverId(q.id); } }} onDrop={(e) => { if (!dragId) return; e.preventDefault(); e.stopPropagation(); placeQuestion(dragId, section.id, q.id); endDrag(); }} className={`panel flex items-start gap-3 ${dragId === q.id ? 'opacity-40' : ''} ${overId === q.id && dragId !== q.id ? 'border-t-4 border-t-forest' : ''}`}>
+              {!readOnly && <span className="mt-0.5 cursor-grab text-forest/40" title="Glisser pour déplacer" aria-hidden="true"><GripVertical size={16}/></span>}
               <span className="mt-0.5 text-sm font-bold text-forest/50">{qi+1}.</span><div className="min-w-0 flex-1"><p className="font-semibold">{q.label}{q.required && ' *'}</p><p className="text-sm text-forest/65">{TYPES[q.type] || q.type}{q.options?.length ? ` · ${q.options.map(o=>o.label).join(', ')}${q.settings?.allow_other ? ', Autre' : ''}` : ''}</p>{q.description && <p className="mt-1 text-sm">{q.description}</p>}{q.rules?.length>0 && <p className="mt-1 text-xs text-forest/65">Condition : {q.rules.map(r=>{const src=ordered.find(x=>x.id===r.source_question_id);return src?`« ${src.label} » ${OPERATORS[r.operator]||r.operator} ${r.value}`:''}).join(' et ')}</p>}</div>
-              {!readOnly && <div className="flex shrink-0 gap-1"><button className={iconBtn} title="Modifier" onClick={()=>editQuestion(q)}><Pencil size={15}/></button><button className={iconBtn} title="Dupliquer" onClick={()=>simple.mutate({path:`/questions/${q.id}/duplicate`,method:'POST'})}><Copy size={15}/></button><button className={iconBtn} title="Supprimer" onClick={()=>window.confirm(study.responses_count > 0 ? 'Supprimer cette question ? Les réponses déjà reçues restent enregistrées, mais cette question n’apparaîtra plus dans les résultats après la prochaine publication.' : 'Supprimer cette question ?')&&simple.mutate({path:`/questions/${q.id}`,method:'DELETE'})}><Trash2 size={15}/></button></div>}
+              {!readOnly && <div className="flex shrink-0 gap-1"><button className={iconBtn} title="Monter" aria-label="Monter la question" disabled={qi===0} onClick={()=>shiftQuestion(q,qs,qi,-1)}><ArrowUp size={15}/></button><button className={iconBtn} title="Descendre" aria-label="Descendre la question" disabled={qi===qs.length-1} onClick={()=>shiftQuestion(q,qs,qi,1)}><ArrowDown size={15}/></button><button className={iconBtn} title="Modifier" onClick={()=>editQuestion(q)}><Pencil size={15}/></button><button className={iconBtn} title="Dupliquer" onClick={()=>simple.mutate({path:`/questions/${q.id}/duplicate`,method:'POST'})}><Copy size={15}/></button><button className={iconBtn} title="Supprimer" onClick={()=>window.confirm(study.responses_count > 0 ? 'Supprimer cette question ? Les réponses déjà reçues restent enregistrées, mais cette question n’apparaîtra plus dans les résultats après la prochaine publication.' : 'Supprimer cette question ?')&&simple.mutate({path:`/questions/${q.id}`,method:'DELETE'})}><Trash2 size={15}/></button></div>}
             </div>)}
+            </div>
             {!readOnly && <div className="flex flex-wrap items-center gap-2"><button className="btn" onClick={()=>{reset();setActiveSection(section.id);setTimeout(() => scrollToId('question-editor'), 50);}}><Plus size={16}/> Ajouter une question</button><label className="text-sm text-forest/70">Déplacer une question vers cette étape : <select className="input mt-1" value="" onChange={(e)=>{const q=ordered.find(x=>String(x.id)===e.target.value);if(q)moveQuestion(q,section.id);}}><option value="">Choisir une question…</option>{ordered.filter(q=>q.section_id!==section.id).map(q=><option key={q.id} value={q.id}>{q.label}</option>)}</select></label></div>}
             {!readOnly && stepSources.length>0 && <SectionConditions section={section} sources={stepSources} onSave={(rules)=>simple.mutate({path:`/sections/${section.id}`,method:'PUT',body:{title:section.title,description:section.description,rules}})}/>}
           </div>

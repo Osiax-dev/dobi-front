@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link, Navigate, NavLink, Route, Routes } from 'react-router-dom';
 import { BarChart3, Building2, ChevronDown, ClipboardList, FolderKanban, LayoutDashboard, LayoutTemplate, LogOut, Menu, Settings, Users, X } from 'lucide-react';
 import { useAuth } from './auth';
-import { Logo } from './ui';
+import { Logo, ROLES } from './ui';
 import { InstallButton, OfflineBanner, UpdateBanner, useQueueSync } from './pwa';
 import { WorkspaceProvider, useWorkspace } from './workspace';
 import NotificationBell from './notifications';
@@ -68,7 +68,10 @@ function Sidebar({ onNavigate }) {
       </div>
       <div className="flex items-center gap-3 border-t border-white/15 pt-3">
         <span className="grid h-9 w-9 place-items-center rounded-full bg-lime font-display font-bold text-forest">{user?.name?.[0]?.toUpperCase()}</span>
-        <span className="min-w-0 flex-1 truncate text-sm font-semibold">{user?.name}</span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-semibold">{user?.name}</span>
+          {active?.role && <span className="block truncate text-xs text-white/65">{ROLES[active.role] || active.role}</span>}
+        </span>
         <button onClick={logout} aria-label="Se déconnecter" className="rounded-lg p-2 hover:bg-white/10"><LogOut size={18} strokeWidth={1.75} /></button>
       </div>
     </div>

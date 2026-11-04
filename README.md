@@ -35,7 +35,7 @@ Vercel redéploie automatiquement à chaque push sur `main`. La variable `VITE_A
 
 ## Auteur
 
-Projet conçu et développé par **Osiax Tcheoubi**, étudiant en Licence Professionnelle en Informatique de Gestion à l'IUT de Parakou (Université de Parakou, Bénin).
+Projet conçu et développé par **Osiax Tcheoubi**
 
 GitHub : [Osiax-dev](https://github.com/Osiax-dev)
 

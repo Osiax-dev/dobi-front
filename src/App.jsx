@@ -5,6 +5,7 @@ import { useAuth } from './auth';
 import { Logo } from './ui';
 import { InstallButton, OfflineBanner, UpdateBanner, useQueueSync } from './pwa';
 import { WorkspaceProvider, useWorkspace } from './workspace';
+import NotificationBell from './notifications';
 import { CheckEmail, EmailVerified, Forgot, Login, Register, Reset } from './pages/Auth';
 import Dashboard from './pages/Dashboard';
 import Studies from './pages/Studies';
@@ -81,7 +82,10 @@ export function Shell({ children }) {
       <aside className="fixed inset-y-0 left-0 hidden w-64 lg:block"><Sidebar /></aside>
       <header className="sticky top-0 z-20 flex items-center justify-between border-b border-forest/10 bg-ivory px-4 py-3 lg:hidden">
         <Logo size={28} />
-        <button onClick={() => setOpen(true)} aria-label="Ouvrir le menu" className="rounded-lg p-2 hover:bg-forest/5"><Menu size={22} /></button>
+        <div className="flex items-center gap-1">
+          <NotificationBell />
+          <button onClick={() => setOpen(true)} aria-label="Ouvrir le menu" className="rounded-lg p-2 hover:bg-forest/5"><Menu size={22} /></button>
+        </div>
       </header>
       {open && (
         <div className="fixed inset-0 z-30 lg:hidden">
@@ -92,7 +96,10 @@ export function Shell({ children }) {
           </aside>
         </div>
       )}
-      <main className="mx-auto max-w-6xl px-4 py-6 lg:px-8">{children}</main>
+      <main className="mx-auto max-w-6xl px-4 py-6 lg:px-8">
+        <div className="-mt-2 mb-2 hidden justify-end lg:flex"><NotificationBell /></div>
+        {children}
+      </main>
     </div>
   );
 }

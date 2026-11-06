@@ -4,12 +4,13 @@ import { Area, AreaChart, Bar, BarChart, Legend, ResponsiveContainer, Tooltip, X
 import { Download, FileSpreadsheet, FileText } from 'lucide-react';
 import { api, downloadExport, errText } from '../api';
 import { buildReport } from '../report';
+import { GenerateReportButton } from './Reports';
 
 const COLORS = ['#102F2B', '#D5F06A', '#D77A52', '#7C91A0', '#2F6F8F', '#B9791A'];
 const fmtDay = (s) => new Date(s).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
 const fmt = (x) => (x ? new Date(x).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' }) : '—');
 
-export default function Results({ study, orgName }) {
+export default function Results({ study, orgName, onReport }) {
   const [f, setF] = useState({ from: '', to: '', version: '', by: '' });
   const [msg, setMsg] = useState('');
   const params = new URLSearchParams(Object.entries(f).filter(([, v]) => v)).toString();
@@ -49,6 +50,7 @@ export default function Results({ study, orgName }) {
           <button className="btn-ghost" onClick={() => doExport('csv')}><Download size={16} /> CSV</button>
           <button className="btn-ghost" onClick={() => doExport('xlsx')}><FileSpreadsheet size={16} /> Excel</button>
           <button className="btn-ghost" onClick={() => buildReport(d, orgName).save(`rapport-${study.slug}.pdf`)}><FileText size={16} /> Rapport PDF</button>
+          {onReport && <GenerateReportButton studyId={study.id} onCreated={onReport} />}
           {(f.from || f.to || f.version || f.by) && <button className="btn-ghost" onClick={() => setF({ from: '', to: '', version: '', by: '' })}>Réinitialiser</button>}
           <span className="text-xs text-forest/60">Les exports tiennent compte des dates et de la version, pas de la comparaison.</span>
         </div>

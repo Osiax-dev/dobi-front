@@ -5,6 +5,7 @@ import { QRCodeSVG } from 'qrcode.react';
 import { ArrowDown, ArrowUp, Copy, FolderPlus, GripVertical, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { api, errText } from '../api';
 import Results from './Results';
+import Reports from './Reports';
 import { Question as PreviewQuestion, buildVisibleSteps, visibleQuestions } from './Public';
 import { STATUS } from '../ui';
 import { useWorkspace } from '../workspace';
@@ -38,6 +39,7 @@ const EVENTS = {
   'study.created': 'Étude créée', 'study.updated': 'Étude modifiée', 'study.duplicated': 'Étude dupliquée', 'study.publish': 'Publication',
   'study.resume': 'Reprise', 'study.suspend': 'Suspension', 'study.close': 'Clôture', 'study.archive': 'Archivage',
   'study.restore': 'Restauration', 'study.exported': 'Export des données',
+  'report.generated': 'Rapport généré', 'report.finalized': 'Rapport finalisé', 'report.reopened': 'Rapport rouvert', 'report.deleted': 'Rapport supprimé', 'report.restored': 'Version de rapport restaurée',
 };
 
 export default function Study() {
@@ -45,8 +47,9 @@ export default function Study() {
   const qc = useQueryClient();
   const [params] = useSearchParams();
   const { orgs } = useWorkspace();
-  const [tab, setTab] = useState(['questions', 'preview', 'results', 'history'].includes(params.get('tab')) ? params.get('tab') : 'questions');
+  const [tab, setTab] = useState(['questions', 'preview', 'results', 'reports', 'history'].includes(params.get('tab')) ? params.get('tab') : 'questions');
   const [error, setError] = useState('');
+  const [reportId, setReportId] = useState(null);
 
   const study = useQuery({ queryKey: ['study', id], queryFn: () => api(`/studies/${id}`) });
   const tree = useQuery({ queryKey: ['tree', id], queryFn: () => api(`/studies/${id}/questionnaire`) });
@@ -131,14 +134,15 @@ export default function Study() {
       )}
 
       <div className="mb-4 flex gap-2">
-        {[['questions', 'Questionnaire'], ['preview', 'Aperçu'], ['results', 'Résultats'], ['history', 'Historique']].map(([k, l]) => (
+        {[['questions', 'Questionnaire'], ['preview', 'Aperçu'], ['results', 'Résultats'], ...(['owner', 'admin', 'analyst'].includes(orgs.find((o) => o.id === s.organization_id)?.role) ? [['reports', 'Rapports']] : []), ['history', 'Historique']].map(([k, l]) => (
           <button key={k} className={tab === k ? 'btn' : 'btn-ghost'} onClick={() => setTab(k)}>{l}</button>
         ))}
       </div>
 
       {tab === 'questions' && <Builder study={s} questions={questions} sections={tree.data?.sections || []} onChange={refresh} readOnly={archived} />}
       {tab === 'preview' && <Preview questions={questions} sections={tree.data?.sections || []} />}
-      {tab === 'results' && <Results study={s} orgName={orgs.find((o) => o.id === s.organization_id)?.name} />}
+      {tab === 'results' && <Results study={s} orgName={orgs.find((o) => o.id === s.organization_id)?.name} onReport={(id) => { setReportId(id); setTab('reports'); }} />}
+      {tab === 'reports' && <Reports study={s} questions={questions} reportId={reportId} setReportId={setReportId} />}
       {tab === 'history' && <History study={s} />}
     </div>
   );

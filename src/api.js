@@ -73,3 +73,18 @@ export async function downloadExport(studyId, format, params = '') {
   a.click();
   URL.revokeObjectURL(a.href);
 }
+
+/** Télécharge un rapport au format Word (.docx), tel qu'il est enregistré sur le serveur. */
+export async function downloadReportDocx(reportId, filename = 'rapport.docx') {
+  const res = await fetch(`${BASE}/reports/${reportId}/export/docx`, { headers: { Authorization: `Bearer ${getToken()}` } });
+  if (!res.ok) {
+    const data = await res.json().catch(() => null);
+    throw new Error(data?.message || 'Export Word impossible.');
+  }
+  const blob = await res.blob();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
